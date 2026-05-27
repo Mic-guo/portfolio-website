@@ -1,0 +1,73 @@
+@import "tailwindcss";
+@import url('https://api.fontshare.com/v2/css?f[]=satoshi@300,400,500,700,900&display=swap');
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+:root {
+  --c-text-color: rgb(240, 240, 240);
+  --c-muted-color: rgb(107, 114, 128);
+}
+
+body {
+  background-color: #080808;
+  color: var(--c-text-color);
+  font-family: 'Satoshi', sans-serif;
+  overflow-x: hidden;
+}
+
+/* Adaptive text classes — driven by JS CSS variables */
+.c-text { color: var(--c-text-color); }
+.c-muted { color: var(--c-muted-color); }
+
+/* Typing cursor */
+.typing-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  background-color: #3b82f6;
+  margin-left: 2px;
+  vertical-align: middle;
+  animation: blink 0.75s step-end infinite;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0; }
+}
+
+/* Scroll indicator */
+.scroll-indicator {
+  animation: bounce 2s ease-in-out infinite;
+}
+
+@keyframes bounce {
+  0%, 100% { transform: translateX(-50%) translateY(0); }
+  50%       { transform: translateX(-50%) translateY(8px); }
+}
+
+/* Timeline center line */
+.timeline-line {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: linear-gradient(to bottom, transparent, #3b82f6 10%, #3b82f6 90%, transparent);
+  transform: translateX(-50%);
+}
+
+/* Project card */
+.project-card {
+  transition: border-color 0.3s, box-shadow 0.3s;
+}
+.project-card:hover {
+  box-shadow: 0 0 40px rgba(59, 130, 246, 0.12);
+}
