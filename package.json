@@ -11,6 +11,9 @@
   "dependencies": {
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.6.1",
+    "@splinetool/loader": "^1.12.95",
+    "@splinetool/r3f-spline": "^1.0.2",
+    "@splinetool/runtime": "^1.12.95",
     "@tailwindcss/vite": "^4.0.12",
     "gsap": "^3.12.7",
     "react": "^19.0.0",
