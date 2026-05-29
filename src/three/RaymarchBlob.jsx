@@ -62,6 +62,16 @@ export function createRaymarchUniforms() {
     // cursor travel — i.e. how much the edge morphs as the user moves.
     uEdgeRate: { value: 1.2 },
 
+    // Interior reveal (driven on the CPU; see RaymarchBlob useFrame).
+    uEnter: { value: 0 },
+    uRoomFog: { value: 0.06 },
+    uCeilLight: { value: 1.2 },
+    uSlitWidth: { value: 0.04 },
+    uSlitLen: { value: 0.9 },
+    uBeam: { value: 1.2 },
+    uRoomColor: { value: new THREE.Color("#15181d") },
+    uLightColor: { value: new THREE.Color("#ffe6c0") },
+
     uCamPos: { value: new THREE.Vector3() },
     uProjInv: { value: new THREE.Matrix4() },
     uViewInv: { value: new THREE.Matrix4() },
@@ -84,12 +94,28 @@ function hashStr(s) {
 const SHADER_KEY =
   hashStr(raymarchVertexShader) + ":" + hashStr(raymarchFragmentShader);
 
+// Interior camera pose: where the camera settles once fully inside the room —
+// just past the doorway, looking down-and-forward so the glowing central floor
+// opening sits in the middle of the frame.
+const INT_POS = new THREE.Vector3(0, 0.3, -0.4);
+const INT_FOCUS = new THREE.Vector3(0, -1.45, -3.0);
+const EXT_FOCUS = new THREE.Vector3(0, 0, 0); // orbit target while outside
+
+// Quintic smoothstep for a soft, weighty dive (ease in and out).
+function smoother(x) {
+  const t = Math.min(1, Math.max(0, x));
+  return t * t * t * (t * (t * 6 - 15) + 10);
+}
+
 export default function RaymarchBlob({
   uniforms,
   sway = 0.12,
   active = false,
+  enterTargetRef,
+  controlsRef,
   onHover,
   onActivate,
+  onExited,
 }) {
   const u = useMemo(() => uniforms ?? createRaymarchUniforms(), [uniforms]);
   const proxyRef = useRef();
@@ -114,6 +140,15 @@ export default function RaymarchBlob({
     press: 0,
     pressTarget: 0,
     pressing: false,
+
+    // Interior reveal lifecycle. `enter` eases toward a continuous target that is
+    // driven by a click (auto dive-in) and then scrubbed by scroll. While fully
+    // outside we keep capturing the live exterior camera pose so the dive starts
+    // from (and returns to) wherever the user last orbited to.
+    enter: 0,
+    extPos: new THREE.Vector3(0, 0, 6),
+    camFocus: new THREE.Vector3(),
+    wasInside: false,
 
     // Scratch objects for analytic cursor picking (avoid per-frame allocation).
     pickO: new THREE.Vector3(),
@@ -202,7 +237,45 @@ export default function RaymarchBlob({
       proxyRef.current.scale.set(s.x * m, s.y * m, s.z * m);
     }
 
+    // --- Interior reveal: dive the camera through the slab into the room. ---
+    // The target is a continuous 0..1: a click sets it to 1 (auto dive-in) and
+    // scroll then scrubs it back down. `enter` follows it with light smoothing,
+    // so the camera tracks the scroll and settles where you stop.
     const cam = state.camera;
+    const enterTarget = enterTargetRef?.current ?? 0;
+    phys.enter += (enterTarget - phys.enter) * Math.min(1, dt * 6);
+    // Snap when essentially settled so uEnter doesn't oscillate in its last
+    // digits (which would flicker the exterior/interior crossfade boundary).
+    if (Math.abs(enterTarget - phys.enter) < 0.0008) phys.enter = enterTarget;
+    u.uEnter.value = phys.enter;
+
+    if (phys.enter < 0.001 && enterTarget < 0.001) {
+      // Outside: orbit owns the camera; remember its pose as the dive's origin.
+      phys.extPos.copy(cam.position);
+      if (controlsRef?.current) controlsRef.current.enabled = true;
+      if (phys.wasInside) {
+        phys.wasInside = false;
+        onExited?.();
+      }
+    } else {
+      // Diving / inside / scrubbing: we own the camera. Orbit stays off.
+      if (controlsRef?.current) controlsRef.current.enabled = false;
+      phys.wasInside = true;
+      const s = smoother(phys.enter);
+      cam.position.set(
+        phys.extPos.x + (INT_POS.x - phys.extPos.x) * s,
+        phys.extPos.y + (INT_POS.y - phys.extPos.y) * s,
+        phys.extPos.z + (INT_POS.z - phys.extPos.z) * s,
+      );
+      phys.camFocus.set(
+        EXT_FOCUS.x + (INT_FOCUS.x - EXT_FOCUS.x) * s,
+        EXT_FOCUS.y + (INT_FOCUS.y - EXT_FOCUS.y) * s,
+        EXT_FOCUS.z + (INT_FOCUS.z - EXT_FOCUS.z) * s,
+      );
+      cam.lookAt(phys.camFocus);
+      cam.updateMatrixWorld();
+    }
+
     u.uCamPos.value.copy(cam.position);
     u.uProjInv.value.copy(cam.projectionMatrix).invert();
     u.uViewInv.value.copy(cam.matrixWorld);

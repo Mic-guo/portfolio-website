@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import RaymarchBlob, { createRaymarchUniforms } from "../three/RaymarchBlob";
@@ -41,14 +41,38 @@ export default function BlobPlayground() {
   const uniforms = useMemo(() => createRaymarchUniforms(), []);
   const [rotationSpeed, setRotationSpeed] = useState(0.0);
   const [hovered, setHovered] = useState(false);
-  const [started, setStarted] = useState(false);
-  const startedTimer = useRef();
+  const [active, setActive] = useState(false); // true once diving in, until fully out
+  const controlsRef = useRef();
+  // Continuous reveal target (0 = outside, 1 = fully inside). A click sets it to
+  // 1 for the auto dive-in; scroll then scrubs it. Kept in a ref so wheel events
+  // don't re-render — RaymarchBlob reads it every frame.
+  const enterTargetRef = useRef(0);
 
   const handleActivate = () => {
-    setStarted(true);
-    window.clearTimeout(startedTimer.current);
-    startedTimer.current = window.setTimeout(() => setStarted(false), 1400);
+    enterTargetRef.current = 1;
+    setActive(true);
   };
+  const handleExited = () => setActive(false);
+
+  // While the reveal is live, scroll scrubs the camera in/out: scroll up backs
+  // out toward the blob, scroll down pushes back into the room. Esc exits.
+  useEffect(() => {
+    if (!active) return;
+    const SCRUB = 0.0016; // reveal units per wheel delta
+    const onWheel = (e) => {
+      const next = enterTargetRef.current + e.deltaY * SCRUB;
+      enterTargetRef.current = Math.min(1, Math.max(0, next));
+    };
+    const onKey = (e) => {
+      if (e.key === "Escape") enterTargetRef.current = 0;
+    };
+    window.addEventListener("wheel", onWheel, { passive: true });
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("wheel", onWheel);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [active]);
 
   return (
     <div style={styles.page}>
@@ -62,13 +86,18 @@ export default function BlobPlayground() {
           uniforms={uniforms}
           sway={rotationSpeed}
           active={hovered}
+          enterTargetRef={enterTargetRef}
+          controlsRef={controlsRef}
           onHover={setHovered}
           onActivate={handleActivate}
+          onExited={handleExited}
         />
         {/* Constrain orbit so the "start" face (locked to the body's local +z)
             stays toward the viewer — past these limits the label reads edge-on
-            or mirrored, breaking the button's legibility. */}
+            or mirrored, breaking the button's legibility. RaymarchBlob toggles
+            `enabled` off while diving so the scripted camera owns the move. */}
         <OrbitControls
+          ref={controlsRef}
           enablePan={false}
           minDistance={3.5}
           maxDistance={11}
@@ -226,6 +255,58 @@ export default function BlobPlayground() {
           value={uniforms.uEdgeRate.value}
           onChange={(v) => (uniforms.uEdgeRate.value = v)}
         />
+        <div style={styles.divider}>room</div>
+        <Slider
+          label="Room fog"
+          min={0}
+          max={0.5}
+          step={0.01}
+          value={uniforms.uRoomFog.value}
+          onChange={(v) => (uniforms.uRoomFog.value = v)}
+        />
+        <Slider
+          label="Ceiling light"
+          min={0}
+          max={3}
+          step={0.05}
+          value={uniforms.uCeilLight.value}
+          onChange={(v) => (uniforms.uCeilLight.value = v)}
+        />
+        <Slider
+          label="Bar length"
+          min={0.3}
+          max={2.4}
+          step={0.05}
+          value={uniforms.uSlitLen.value}
+          onChange={(v) => (uniforms.uSlitLen.value = v)}
+        />
+        <Slider
+          label="Bar width"
+          min={0.04}
+          max={0.6}
+          step={0.01}
+          value={uniforms.uSlitWidth.value}
+          onChange={(v) => (uniforms.uSlitWidth.value = v)}
+        />
+        <Slider
+          label="Beam"
+          min={0}
+          max={3}
+          step={0.05}
+          value={uniforms.uBeam.value}
+          onChange={(v) => (uniforms.uBeam.value = v)}
+        />
+        <ColorInput
+          label="Room color"
+          value="#15181d"
+          onChange={(hex) => uniforms.uRoomColor.value.set(hex)}
+        />
+        <ColorInput
+          label="Light color"
+          value="#ffe6c0"
+          onChange={(hex) => uniforms.uLightColor.value.set(hex)}
+        />
+        <div style={styles.divider}>blob</div>
         <Slider
           label="Rim power"
           min={0.5}
@@ -255,7 +336,9 @@ export default function BlobPlayground() {
         />
 
         <div style={styles.hint}>
-          {started ? "started ✓" : "hover · click to start · drag to orbit"}
+          {active
+            ? "scroll to scrub in / out · Esc to exit"
+            : "hover · click start to enter · drag to orbit"}
         </div>
       </div>
     </div>
@@ -264,11 +347,24 @@ export default function BlobPlayground() {
 
 const styles = {
   page: { position: "fixed", inset: 0, background: "#050605" },
+  divider: {
+    marginTop: 6,
+    paddingTop: 8,
+    borderTop: "1px solid rgba(159,184,173,0.15)",
+    fontSize: 10,
+    letterSpacing: "0.18em",
+    textTransform: "uppercase",
+    color: "rgba(159,184,173,0.55)",
+  },
   panel: {
     position: "fixed",
     top: 20,
     right: 20,
+    zIndex: 20,
     width: 240,
+    maxHeight: "calc(100vh - 40px)",
+    overflowY: "auto",
+    overscrollBehavior: "contain",
     padding: "16px 18px",
     borderRadius: 12,
     background: "rgba(12,14,13,0.78)",
