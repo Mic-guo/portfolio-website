@@ -204,36 +204,76 @@ float plateGrow(){
   return uHasText * uHover;
 }
 
-// Where the plate sits on the blob's face (local x/y), following the eased
-// cursor direction so the "start" button slides toward the mouse on hover.
+// Where the plate sits on the blob's face (local x/y). It tracks the cursor's
+// actual position ON the body's front face — not a tiny fraction of the raw
+// direction vector — so the "start" slab rides AROUND the blob under the cursor
+// instead of staying pinned near the center. We map the cursor direction onto
+// the ellipsoid's x/y extent (lm.xy * radii) to get the on-face point, scale by
+// uPlateFollow (how far it's allowed to roam), and clamp so the slab's body
+// always stays on the face and keeps merging with the blob.
 vec2 plateCenter(){
   vec3 lm = normalize(uModelRotInv * uMouse); // cursor dir in local frame
-  return lm.xy * uPlateFollow * uHover;
+  // The cursor's x/y position on the body's surface (its footprint on the face).
+  vec2 onFace = vec2(lm.x * uScale.x, lm.y * uScale.y);
+  vec2 c = onFace * uPlateFollow * uHover;
+  // Keep the slab from sliding off the body: leave room for half the slab so its
+  // back stays embedded and the metaball merge never breaks.
+  vec2 hw = vec2(uTextHalf.x * uSlabWidth, uTextHalf.y * uSlabHeight);
+  vec2 lim = max(uScale.xy - hw * 0.5, vec2(0.0));
+  return clamp(c, -lim, lim);
 }
 
-// The "start" plate: a separate rounded-rectangular slab that lives in the
-// blob's local frame. At rest it is small and tucked inside the body; as the
-// cursor approaches it grows forward through the front surface so it can
-// metaball-merge with the blob and read as "start". Its x/y center tracks the
-// cursor so the button follows the mouse.
-float sdPlate(vec3 p){
-  float g = plateGrow();
-  float sxy = mix(0.4, 1.0, g);
+// The slab's frame on the body. Its face ALWAYS points radially outward from the
+// blob center, so as the slab rides around the body it stays tangent to the
+// surface and faces directly out (never locked to a single direction). We find
+// the surface point under the cursor, take the radial direction there as the
+// slab's outward (+z) axis, and build horizontal/vertical axes around it (the
+// horizontal axis is derived from world-up so the text stays upright).
+//   origin = slab center (back tucked under the surface, face lifted out)
+//   tx,ty  = in-face axes (text right / up)   nrm = outward face normal
+void plateFrame(out vec3 origin, out vec3 tx, out vec3 ty, out vec3 nrm){
   vec2 c = plateCenter();
-  // Anchor the slab to the blob's curved front face right under the cursor so it
-  // stays fused to the body wherever it follows: find the ellipsoid's front z at
-  // the plate center, keep the slab's back tucked inside the surface, and let it
-  // pop out a little as it grows. Because the back is always embedded, the
-  // metaball merge never breaks -> "start" is always attached to the blob.
+  float g = plateGrow();
+  // Ellipsoid front z at the plate center -> the surface point the slab sits on.
   float kk = clamp(1.0 - (c.x * c.x) / (uScale.x * uScale.x)
                        - (c.y * c.y) / (uScale.y * uScale.y), 0.0, 1.0);
   float zFront = uScale.z * sqrt(kk);
-  // How far the patch pushes out of the front membrane. Enough to read as a
-  // raised "start" lifting out of the body, while the back stays embedded so the
-  // metaball merge keeps it fused (not a floating card). Press sinks it back in.
+  vec3 surf = vec3(c, zFront);
+  // Radial direction from the body center = the way the face points. This is what
+  // makes the slab face "directly outward" wherever it travels.
+  nrm = normalize(surf);
+  // Horizontal in-face axis from world-up (keeps the word upright); flip the
+  // reference near the poles to avoid a degenerate cross product.
+  vec3 up = abs(nrm.y) > 0.95 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
+  tx = normalize(cross(up, nrm));
+  ty = cross(nrm, tx);
+  // Back stays embedded under the surface; the face lifts out along the normal as
+  // it grows. Press sinks it back in. Because the back is always inside the body,
+  // the metaball merge never breaks -> "start" stays fused to the blob.
   float protr = g * uProtrude * (1.0 - 0.6 * uPress);
-  float cz = zFront - uTextThickness + protr;
-  vec3 lp = p - vec3(c, cz);
+  origin = surf + nrm * (protr - uTextThickness);
+}
+
+// A point expressed in the slab's outward-facing frame: xy = in-face plane,
+// z = depth along the outward normal (0 at center, + toward the face).
+vec3 plateLocal(vec3 p){
+  vec3 o, tx, ty, nrm;
+  plateFrame(o, tx, ty, nrm);
+  vec3 rel = p - o;
+  return vec3(dot(tx, rel), dot(ty, rel), dot(nrm, rel));
+}
+
+// The "start" plate: a separate rounded-rectangular slab whose face always faces
+// radially outward from the blob (see plateFrame). At rest it is small and tucked
+// inside the body; as the cursor approaches it grows out through the surface so it
+// metaball-merges with the blob and reads as "start". Its center tracks the cursor
+// (plateCenter) so the button rides around the body under the mouse.
+float sdPlate(vec3 p){
+  float g = plateGrow();
+  float sxy = mix(0.4, 1.0, g);
+  // Into the slab's outward-facing frame: lp.xy is the face plane, lp.z the
+  // thickness axis pointing radially out of the body.
+  vec3 lp = plateLocal(p);
 
   // Base rounded rectangle (the object is wider than the word; the glyph mapping
   // still uses the unpadded text bounds, so the text stays the same size).
@@ -411,8 +451,9 @@ void main(){
     vec3 q = toLocal(p);
     float g = plateGrow();
     float sxy = mix(0.4, 1.0, g);
-    vec2 c = plateCenter();
-    float frontFace = smoothstep(-0.1, 0.4, q.z); // only paint on the plate's face
+    // Into the slab's outward-facing frame so the word rides with the rotated face.
+    vec3 lp = plateLocal(q);
+    float frontFace = smoothstep(-0.06, 0.04, lp.z); // only paint on the outward face
 
     // Glass slab = TRANSMISSION, not emission. Instead of a flat dark fill (which
     // reads as a solid block), we show the BODY THROUGH the slab: shade the blob's
@@ -425,10 +466,11 @@ void main(){
     col3 = mix(col3, glass, slab * uSlabTranslucency);
 
     // The word is painted on, gated to the unpadded text bounds so it stays the
-    // same size as the slab grows.
+    // same size as the slab grows. UVs come from the in-face axes, so the glyphs
+    // rotate with the slab as its face turns to point outward.
     vec2 luv = vec2(
-      (q.x - c.x) / (2.0 * uTextHalf.x * sxy) + 0.5,
-      (q.y - c.y) / (2.0 * uTextHalf.y * sxy) + 0.5
+      lp.x / (2.0 * uTextHalf.x * sxy) + 0.5,
+      lp.y / (2.0 * uTextHalf.y * sxy) + 0.5
     );
     float inb =
       step(0.0, luv.x) * step(luv.x, 1.0) * step(0.0, luv.y) * step(luv.y, 1.0);

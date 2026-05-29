@@ -197,7 +197,7 @@ export default function BlobPlayground() {
         <Slider
           label="Plate follow"
           min={0}
-          max={0.8}
+          max={1.5}
           step={0.01}
           value={uniforms.uPlateFollow.value}
           onChange={(v) => (uniforms.uPlateFollow.value = v)}

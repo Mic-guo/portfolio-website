@@ -47,7 +47,7 @@ export function createRaymarchUniforms() {
     uHasText: { value: 1 },
     uLabelColor: { value: new THREE.Color("#eef3ef") },
     uLabelStrength: { value: 1.0 },
-    uPlateFollow: { value: 0.4 },
+    uPlateFollow: { value: 1.0 },
     uSlabWidth: { value: 2.0 },
     uSlabHeight: { value: 1.2 },
     uSlabTranslucency: { value: 0.7 },
