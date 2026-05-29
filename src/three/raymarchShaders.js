@@ -109,6 +109,19 @@ uniform float uEdgeAsym;         // edge refraction asymmetry (which side/corner
 uniform float uPress;            // click press (0 = released, 1 = fully pressed)
 uniform float uRestReveal;       // faint label visibility at rest, before hover
 
+// --- Interior reveal: clicking "start" dives the camera through the slab and the
+// scene crossfades from the exterior blob button to an interior room (ceiling
+// light + floor cutout + volumetric beam). uEnter (0..1) is the single source of
+// truth, eased on the CPU; everything else is derived from it. ---
+uniform float uEnter;       // 0 = exterior button, 1 = fully inside the room
+uniform float uRoomFog;     // depth fog density inside the room
+uniform float uCeilLight;   // top-down ceiling light strength
+uniform float uSlitWidth;   // half-width (in z, depth) of the floor light bar
+uniform float uSlitLen;     // half-length (in x, across) of the floor light bar
+uniform float uBeam;        // volumetric light-shaft intensity through the bar
+uniform vec3 uRoomColor;    // dark wall / floor base color
+uniform vec3 uLightColor;   // light + glow color
+
 ${SIMPLEX_NOISE}
 
 const float RADIUS = 1.4;
@@ -398,14 +411,10 @@ vec3 shadeBody(vec3 N, vec3 rd){
   return c;
 }
 
-void main(){
-  vec2 ndc = vUv * 2.0 - 1.0;
-  vec4 clip = vec4(ndc, -1.0, 1.0);
-  vec4 viewPos = uProjInv * clip;
-  viewPos /= viewPos.w;
-  vec3 rd = normalize((uViewInv * vec4(normalize(viewPos.xyz), 0.0)).xyz);
-  vec3 ro = uCamPos;
-
+// The exterior "start" button scene (blob + merged slab + label). Returns the
+// shaded color for a camera ray. This is the original main() body, factored out
+// so the interior reveal can crossfade away from it.
+vec3 renderExterior(vec3 ro, vec3 rd){
   // Bounding-sphere cull: analytically intersect the ray with a sphere around
   // the blob. Pixels that miss it are pure background (no marching at all), and
   // those that hit only march the span inside the sphere. This skips the huge
@@ -414,11 +423,7 @@ void main(){
   float bb = dot(oc, rd);
   float cc = dot(oc, oc) - BOUND_R * BOUND_R;
   float disc = bb * bb - cc;
-  if(disc < 0.0){
-    gl_FragColor = vec4(uBg, 1.0);
-    #include <colorspace_fragment>
-    return;
-  }
+  if(disc < 0.0) return uBg;
   float sq = sqrt(disc);
   float tEnter = max(-bb - sq, 0.0);
   float tExit = -bb + sq;
@@ -446,28 +451,17 @@ void main(){
     vec3 col3 = shadeBody(N, rd);
 
     // --- "start" read off the merged label plate ---
-    // Work in the blob's local frame; the plate (and therefore the text) leans
-    // and flows with the body as the cursor pulls it around.
     vec3 q = toLocal(p);
     float g = plateGrow();
     float sxy = mix(0.4, 1.0, g);
-    // Into the slab's outward-facing frame so the word rides with the rotated face.
     vec3 lp = plateLocal(q);
     float frontFace = smoothstep(-0.06, 0.04, lp.z); // only paint on the outward face
 
-    // Glass slab = TRANSMISSION, not emission. Instead of a flat dark fill (which
-    // reads as a solid block), we show the BODY THROUGH the slab: shade the blob's
-    // own curved surface (its normal here) so you see its gradient/depth through
-    // the glass. Add only a faint fresnel edge reflection — the slab emits no
-    // light. uSlabTranslucency = how see-through it is (1 = fully clear).
     float slab = plateWeight(q) * g;
     vec3 behind = shadeBody(calcBlobNormal(p), rd);     // body seen through the glass
     vec3 glass = mix(behind, uRimColor, pow(fres, 1.5) * 0.25);
     col3 = mix(col3, glass, slab * uSlabTranslucency);
 
-    // The word is painted on, gated to the unpadded text bounds so it stays the
-    // same size as the slab grows. UVs come from the in-face axes, so the glyphs
-    // rotate with the slab as its face turns to point outward.
     vec2 luv = vec2(
       lp.x / (2.0 * uTextHalf.x * sxy) + 0.5,
       lp.y / (2.0 * uTextHalf.y * sxy) + 0.5
@@ -476,9 +470,6 @@ void main(){
       step(0.0, luv.x) * step(luv.x, 1.0) * step(0.0, luv.y) * step(luv.y, 1.0);
     float cov = texture2D(uTextSDF, clamp(luv, 0.0, 1.0)).a;
     float glyph = smoothstep(0.42, 0.6, cov);
-    // Reveal: the word is faintly legible at rest (uRestReveal) so the affordance
-    // reads in a still frame, then resolves fully as the plate grows on hover (g).
-    // Press brightens it as a click confirmation.
     float reveal = max(g, uRestReveal * uHasText);
     float restDim = mix(0.6, 1.0, g);
     vec3 labelCol = uLabelColor * (0.7 + 0.45 * fres) * restDim * (1.0 + 0.4 * uPress);
@@ -486,6 +477,155 @@ void main(){
     col3 = mix(col3, labelCol, textA * 0.85);
 
     col = col3;
+  }
+  return col;
+}
+
+// ============================ INTERIOR ROOM ============================
+// A dark, enclosed box the camera flies into. Lighting is top-down (an emissive
+// ceiling panel), so horizontal surfaces catch light while the vertical walls
+// stay dark. The center of the floor has a round cutout with an emissive disc
+// just beneath it, so light reads as shining UP through the opening. The opening
+// is the portal: on the way out it recenters and crossfades back into the blob.
+
+const float FLOOR_Y   = -1.60;
+const float CEIL_Y    =  2.10;
+const float WALL_X    =  3.40; // side walls at +/-x
+const float WALL_ZB   = -7.50; // back wall
+const float WALL_ZF   =  3.50; // front wall (behind the arrival pose)
+const float SLIT_Z    = -3.00; // floor light-bar center (ahead of the camera)
+
+float sdBoxR(vec3 p, vec3 b){
+  vec3 q = abs(p) - b;
+  return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0);
+}
+
+// Planar distance to the light-bar center line (0 along the bar, growing away
+// from it). Used to place the light bounce and the volumetric beam.
+float slitDist(vec3 p){
+  float dx = max(abs(p.x) - uSlitLen, 0.0);
+  float dz = p.z - SLIT_Z;
+  return length(vec2(dx, dz));
+}
+
+// Interior distance field. Walls are half-spaces (positive inside the room); the
+// floor has a long slit carved out of its center; an emissive box sits just
+// below the slit.
+//   mat: 0 = dark shell, 1 = ceiling light panel, 2 = under-floor glow
+float roomMap(vec3 p, out int mat){
+  // Solid floor, no recess — the light bar lies flat ON the ground surface.
+  float floorD = p.y - FLOOR_Y;
+  float ceilD  = CEIL_Y - p.y;
+  float leftD  = p.x + WALL_X;
+  float rightD = WALL_X - p.x;
+  float backD  = p.z - WALL_ZB;
+  float frontD = WALL_ZF - p.z;
+  float shell  = min(min(min(floorD, ceilD), min(leftD, rightD)), min(backD, frontD));
+
+  mat = 0;
+  // Where the floor is the nearest surface and we're inside the bar footprint,
+  // the floor itself is emissive -> a flat horizontal bar of light on the ground.
+  if(floorD <= ceilD && floorD <= leftD && floorD <= rightD
+     && floorD <= backD && floorD <= frontD){
+    if(abs(p.x) < uSlitLen && abs(p.z - SLIT_Z) < uSlitWidth) mat = 2;
+  } else if(ceilD <= leftD && ceilD <= rightD && ceilD <= backD && ceilD <= frontD){
+    if(abs(p.x) < uSlitLen + 0.8 && abs(p.z - SLIT_Z) < uSlitWidth + 1.2) mat = 1;
+  }
+  return shell;
+}
+
+float roomDist(vec3 p){ int m; return roomMap(p, m); }
+
+vec3 roomNormal(vec3 p){
+  const vec2 k = vec2(1.0, -1.0);
+  const float h = 0.003;
+  return normalize(
+    k.xyy * roomDist(p + k.xyy * h) +
+    k.yyx * roomDist(p + k.yyx * h) +
+    k.yxy * roomDist(p + k.yxy * h) +
+    k.xxx * roomDist(p + k.xxx * h));
+}
+
+// Cheap volumetric light shaft: integrate proximity to the sheet of light rising
+// from the slit. Brightest near the floor (the source), fading up. The vertical
+// extent uses a smooth window (not a hard y test) so samples don't pop as they
+// cross the floor/ceiling planes -> no flicker.
+float roomBeam(vec3 ro, vec3 rd){
+  float acc = 0.0;
+  float t = 0.1;
+  for(int i = 0; i < 30; i++){
+    vec3 p = ro + rd * t;
+    float rad = slitDist(p) / (uSlitWidth * 2.0 + 0.001);
+    float prof = exp(-rad * rad);
+    float hgt = clamp((p.y - FLOOR_Y) / (CEIL_Y - FLOOR_Y), 0.0, 1.0);
+    float win = smoothstep(FLOOR_Y - 0.15, FLOOR_Y + 0.25, p.y)
+              * smoothstep(CEIL_Y + 0.15, CEIL_Y - 0.45, p.y);
+    acc += prof * (1.0 - hgt * 0.65) * win;
+    t += 0.2;
+    if(t > 24.0) break;
+  }
+  return acc * 0.05;
+}
+
+vec3 renderRoom(vec3 ro, vec3 rd){
+  float t = 0.02;
+  int mat = 0;
+  bool hit = false;
+  for(int i = 0; i < 120; i++){
+    vec3 p = ro + rd * t;
+    float d = roomMap(p, mat);
+    if(d < 0.001){ hit = true; break; }
+    t += d * 0.9; // safety factor: the CSG carve isn't a perfect SDF near the slit
+    if(t > 50.0) break;
+  }
+
+  vec3 col = uRoomColor * 0.12;
+  if(hit){
+    vec3 p = ro + rd * t;
+    if(mat == 2){
+      col = uLightColor * 3.4;                       // glow shining up through the opening
+    } else if(mat == 1){
+      col = uLightColor * (0.5 + 1.0 * uCeilLight);  // top-down ceiling panel
+    } else {
+      vec3 n = roomNormal(p);
+      float top = clamp(n.y, 0.0, 1.0);              // surfaces facing up catch the light
+      // Warm bounce from the bar onto the surrounding floor.
+      float bounce = exp(-slitDist(p) * 0.6) * clamp(n.y, 0.0, 1.0);
+      col = uRoomColor * (0.05 + uCeilLight * 0.6 * top) + uLightColor * 0.5 * bounce;
+    }
+  }
+
+  // Volumetric shaft rising from the opening.
+  col += uLightColor * roomBeam(ro, rd) * uBeam;
+
+  // Subtle dark depth fog so far walls fall off into black.
+  float fog = 1.0 - exp(-t * uRoomFog);
+  col = mix(col, uRoomColor * 0.1, fog);
+  return col;
+}
+
+void main(){
+  vec2 ndc = vUv * 2.0 - 1.0;
+  vec4 clip = vec4(ndc, -1.0, 1.0);
+  vec4 viewPos = uProjInv * clip;
+  viewPos /= viewPos.w;
+  vec3 rd = normalize((uViewInv * vec4(normalize(viewPos.xyz), 0.0)).xyz);
+  vec3 ro = uCamPos;
+
+  // Crossfade exterior -> interior as the camera dives through the slab. At the
+  // blend zone the slab fills the frame (dark glass), so the swap reads as
+  // EMERGING through the button into the room rather than a hard cut. The blend
+  // completes at 0.78 (well before uEnter settles at ~1) so the exterior path
+  // doesn't flicker on/off as uEnter jitters in its last digits while inside.
+  float reveal = smoothstep(0.5, 0.78, uEnter);
+
+  vec3 extCol = uBg;
+  if(reveal < 0.999) extCol = renderExterior(ro, rd);
+
+  vec3 col = extCol;
+  if(uEnter > 0.001){
+    vec3 roomCol = renderRoom(ro, rd);
+    col = mix(extCol, roomCol, reveal);
   }
 
   gl_FragColor = vec4(col, 1.0);
