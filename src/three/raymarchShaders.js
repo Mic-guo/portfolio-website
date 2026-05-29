@@ -105,7 +105,9 @@ uniform float uSlabHeight;       // slab half-height as a multiple of the text h
 uniform float uSlabTranslucency; // 0 = same as body, 1 = light/glassy translucent
 uniform float uProtrude;         // how far the slab pushes out of the front face
 uniform float uEdgeAmount;       // edge refraction displacement amplitude
-uniform float uEdgeFreq;         // edge refraction spatial frequency (fewer/more bends)
+uniform float uEdgeAsym;         // edge refraction asymmetry (which side/corner flows more)
+uniform float uPress;            // click press (0 = released, 1 = fully pressed)
+uniform float uRestReveal;       // faint label visibility at rest, before hover
 
 ${SIMPLEX_NOISE}
 
@@ -173,10 +175,13 @@ float sdEllipsoid(vec3 p, vec3 r){
 float sdBlob(vec3 p){
   vec3 dir = normalize(p + 1e-5);
   float disp = displacement(dir);
+  // Press feedback: the whole body squishes slightly inward on click, so the
+  // button physically gives when pressed and springs back on release.
+  vec3 bodyScale = uScale * (1.0 - 0.05 * uPress);
   // Equator "belt": a gentle band that swells the middle so the front reads as
   // a face the decal is embedded in.
-  float belt = uBelt * exp(-(p.y / uScale.y) * (p.y / uScale.y) * 5.0);
-  return sdEllipsoid(p, uScale) - disp - belt;
+  float belt = uBelt * exp(-(p.y / bodyScale.y) * (p.y / bodyScale.y) * 5.0);
+  return sdEllipsoid(p, bodyScale) - disp - belt;
 }
 
 float sdRoundBox(vec3 p, vec3 b, float r){
@@ -225,8 +230,8 @@ float sdPlate(vec3 p){
   float zFront = uScale.z * sqrt(kk);
   // How far the patch pushes out of the front membrane. Enough to read as a
   // raised "start" lifting out of the body, while the back stays embedded so the
-  // metaball merge keeps it fused (not a floating card).
-  float protr = g * uProtrude;
+  // metaball merge keeps it fused (not a floating card). Press sinks it back in.
+  float protr = g * uProtrude * (1.0 - 0.6 * uPress);
   float cz = zFront - uTextThickness + protr;
   vec3 lp = p - vec3(c, cz);
 
@@ -242,9 +247,9 @@ float sdPlate(vec3 p){
   // a blob (its rectangular identity always survives). Driven by uEdgePhase, so the
   // softening only breathes while the cursor moves.
   //   uEdgeAmount = how much rigidity it can lose (0 = always crisp, 1 = very soft)
-  //   uEdgeFreq   = asymmetry (one side/corner flows more than another)
+  //   uEdgeAsym   = asymmetry (one side/corner flows more than another)
   float ph = uEdgePhase;
-  float asym = uEdgeFreq;
+  float asym = uEdgeAsym;
 
   // Rigidity loss oscillates so stiffness continuously comes and goes. Clamped so
   // the rectangle never melts all the way to a blob.
@@ -429,8 +434,13 @@ void main(){
       step(0.0, luv.x) * step(luv.x, 1.0) * step(0.0, luv.y) * step(luv.y, 1.0);
     float cov = texture2D(uTextSDF, clamp(luv, 0.0, 1.0)).a;
     float glyph = smoothstep(0.42, 0.6, cov);
-    vec3 labelCol = uLabelColor * (0.7 + 0.45 * fres);
-    float textA = glyph * inb * frontFace * g * uLabelStrength;
+    // Reveal: the word is faintly legible at rest (uRestReveal) so the affordance
+    // reads in a still frame, then resolves fully as the plate grows on hover (g).
+    // Press brightens it as a click confirmation.
+    float reveal = max(g, uRestReveal * uHasText);
+    float restDim = mix(0.6, 1.0, g);
+    vec3 labelCol = uLabelColor * (0.7 + 0.45 * fres) * restDim * (1.0 + 0.4 * uPress);
+    float textA = glyph * inb * frontFace * reveal * uLabelStrength;
     col3 = mix(col3, labelCol, textA * 0.85);
 
     col = col3;

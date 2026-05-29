@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import RaymarchBlob, { createRaymarchUniforms } from "../three/RaymarchBlob";
@@ -41,6 +41,14 @@ export default function BlobPlayground() {
   const uniforms = useMemo(() => createRaymarchUniforms(), []);
   const [rotationSpeed, setRotationSpeed] = useState(0.0);
   const [hovered, setHovered] = useState(false);
+  const [started, setStarted] = useState(false);
+  const startedTimer = useRef();
+
+  const handleActivate = () => {
+    setStarted(true);
+    window.clearTimeout(startedTimer.current);
+    startedTimer.current = window.setTimeout(() => setStarted(false), 1400);
+  };
 
   return (
     <div style={styles.page}>
@@ -55,8 +63,20 @@ export default function BlobPlayground() {
           sway={rotationSpeed}
           active={hovered}
           onHover={setHovered}
+          onActivate={handleActivate}
         />
-        <OrbitControls enablePan={false} minDistance={3.5} maxDistance={11} />
+        {/* Constrain orbit so the "start" face (locked to the body's local +z)
+            stays toward the viewer — past these limits the label reads edge-on
+            or mirrored, breaking the button's legibility. */}
+        <OrbitControls
+          enablePan={false}
+          minDistance={3.5}
+          maxDistance={11}
+          minPolarAngle={Math.PI * 0.28}
+          maxPolarAngle={Math.PI * 0.72}
+          minAzimuthAngle={-Math.PI * 0.32}
+          maxAzimuthAngle={Math.PI * 0.32}
+        />
       </Canvas>
 
       <div style={styles.panel}>
@@ -135,6 +155,14 @@ export default function BlobPlayground() {
           onChange={(v) => (uniforms.uLabelStrength.value = v)}
         />
         <Slider
+          label="Rest reveal"
+          min={0}
+          max={0.4}
+          step={0.01}
+          value={uniforms.uRestReveal.value}
+          onChange={(v) => (uniforms.uRestReveal.value = v)}
+        />
+        <Slider
           label="Slab width"
           min={1}
           max={3.5}
@@ -187,8 +215,8 @@ export default function BlobPlayground() {
           min={0}
           max={6}
           step={0.1}
-          value={uniforms.uEdgeFreq.value}
-          onChange={(v) => (uniforms.uEdgeFreq.value = v)}
+          value={uniforms.uEdgeAsym.value}
+          onChange={(v) => (uniforms.uEdgeAsym.value = v)}
         />
         <Slider
           label="Edge morph rate"
@@ -226,7 +254,9 @@ export default function BlobPlayground() {
           onChange={(hex) => uniforms.uRimColor.value.set(hex)}
         />
 
-        <div style={styles.hint}>hover the blob · drag to orbit</div>
+        <div style={styles.hint}>
+          {started ? "started ✓" : "hover · click to start · drag to orbit"}
+        </div>
       </div>
     </div>
   );

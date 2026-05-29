@@ -53,7 +53,11 @@ export function createRaymarchUniforms() {
     uSlabTranslucency: { value: 0.7 },
     uProtrude: { value: 0.38 },
     uEdgeAmount: { value: 0.55 },
-    uEdgeFreq: { value: 1.6 },
+    uEdgeAsym: { value: 1.6 },
+    uPress: { value: 0 },
+    // 0 = label hidden until hover (the plate grow alone reveals it). Raise it
+    // only if you want a faint resting "start" before hover.
+    uRestReveal: { value: 0 },
     // JS-side only (read in useFrame): how fast the edge phase advances per unit of
     // cursor travel — i.e. how much the edge morphs as the user moves.
     uEdgeRate: { value: 1.2 },
@@ -85,6 +89,7 @@ export default function RaymarchBlob({
   sway = 0.12,
   active = false,
   onHover,
+  onActivate,
 }) {
   const u = useMemo(() => uniforms ?? createRaymarchUniforms(), [uniforms]);
   const proxyRef = useRef();
@@ -104,6 +109,17 @@ export default function RaymarchBlob({
     swayQuat: new THREE.Quaternion(),
     euler: new THREE.Euler(),
     rot4: new THREE.Matrix4(),
+
+    // Click / press lifecycle (eased on the CPU, fed to the shader as uPress).
+    press: 0,
+    pressTarget: 0,
+    pressing: false,
+
+    // Scratch objects for analytic cursor picking (avoid per-frame allocation).
+    pickO: new THREE.Vector3(),
+    pickD: new THREE.Vector3(),
+    pickQ: new THREE.Vector3(),
+    pickInvQuat: new THREE.Quaternion(),
   }).current;
 
   useFrame((state, delta) => {
@@ -114,6 +130,10 @@ export default function RaymarchBlob({
     const hoverTarget = active ? 1 : 0;
     u.uHover.value += (hoverTarget - u.uHover.value) * Math.min(1, dt * 6);
     const h = u.uHover.value;
+
+    // Press easing: fast attack so a click reads as a crisp give-and-release.
+    phys.press += (phys.pressTarget - phys.press) * Math.min(1, dt * 18);
+    u.uPress.value = phys.press;
 
     // The local swell follows an eased cursor direction, so the membrane
     // ripples toward the cursor and settles rather than snapping.
@@ -170,16 +190,81 @@ export default function RaymarchBlob({
     phys.rot4.makeRotationFromQuaternion(phys.quat).invert();
     u.uModelRotInv.value.setFromMatrix4(phys.rot4);
 
+    // Keep the invisible event-capture volume locked to the SAME transform the
+    // shader renders (drift + lean/sway), scaled to the body radii with a margin.
+    // It only captures pointer events; the cursor surface point itself is solved
+    // analytically against the shared ellipsoid model in handleMove.
+    if (proxyRef.current) {
+      const s = u.uScale.value;
+      const m = 1.55; // hover margin around the body
+      proxyRef.current.position.copy(u.uTranslate.value);
+      proxyRef.current.quaternion.copy(phys.quat);
+      proxyRef.current.scale.set(s.x * m, s.y * m, s.z * m);
+    }
+
     const cam = state.camera;
     u.uCamPos.value.copy(cam.position);
     u.uProjInv.value.copy(cam.projectionMatrix).invert();
     u.uViewInv.value.copy(cam.matrixWorld);
   });
 
+  // Cursor surface point derived from the SAME ellipsoid model the shader renders
+  // (shared uScale / uTranslate / rotation), rather than from the standalone proxy
+  // sphere's own geometry. This keeps hit-testing and the rendered silhouette on a
+  // single source of truth: the cursor point lies on the body you actually see.
   const handleMove = (e) => {
     e.stopPropagation();
-    // Direction from the blob center to the cursor's surface hit, in world space.
-    phys.cursorDir.copy(e.point).normalize();
+    const ro = e.ray.origin;
+    const rd = e.ray.direction;
+    const s = u.uScale.value;
+
+    // Bring the camera ray into the body's local frame (world -> local).
+    const invQ = phys.pickInvQuat.copy(phys.quat).invert();
+    const o = phys.pickO.copy(ro).sub(u.uTranslate.value).applyQuaternion(invQ);
+    const d = phys.pickD.copy(rd).applyQuaternion(invQ).normalize();
+
+    // Map into unit-sphere space by dividing out the ellipsoid radii, then solve
+    // the ray/sphere quadratic. Rm leaves headroom for the breathing displacement.
+    const oux = o.x / s.x;
+    const ouy = o.y / s.y;
+    const ouz = o.z / s.z;
+    const dux = d.x / s.x;
+    const duy = d.y / s.y;
+    const duz = d.z / s.z;
+    const Rm = 1 + u.uAmplitude.value * 0.8;
+    const a = dux * dux + duy * duy + duz * duz;
+    const b = 2 * (oux * dux + ouy * duy + ouz * duz);
+    const c = oux * oux + ouy * ouy + ouz * ouz - Rm * Rm;
+    const disc = b * b - 4 * a * c;
+    if (disc < 0) return; // ray misses the body -> keep the last cursor direction
+
+    const sq = Math.sqrt(disc);
+    let t = (-b - sq) / (2 * a);
+    if (t < 0) t = (-b + sq) / (2 * a);
+    if (t < 0) return;
+
+    // Local hit -> world-space direction from the body center (what uMouse wants).
+    phys.pickQ
+      .set((oux + t * dux) * s.x, (ouy + t * duy) * s.y, (ouz + t * duz) * s.z)
+      .normalize()
+      .applyQuaternion(phys.quat);
+    phys.cursorDir.copy(phys.pickQ);
+  };
+
+  const handleDown = (e) => {
+    e.stopPropagation();
+    phys.pressTarget = 1;
+    phys.pressing = true;
+  };
+
+  const handleUp = (e) => {
+    e.stopPropagation();
+    phys.pressTarget = 0;
+    // A press that releases over the body is a click -> fire the action.
+    if (phys.pressing) {
+      phys.pressing = false;
+      onActivate?.();
+    }
   };
 
   return (
@@ -204,21 +289,28 @@ export default function RaymarchBlob({
         />
       </mesh>
 
-      {/* Invisible proxy: hover detection + cursor position. Sized clearly
-          larger than the blob so hover also triggers within a margin/radius
-          around the body, not just exactly on it. */}
+      {/* Invisible event-capture volume: it ONLY routes pointer enter/leave/
+          move/down/up. It tracks the body's transform (see useFrame) and is
+          inflated by a margin so hover triggers around the body. The actual
+          cursor surface point is solved analytically against the shared
+          ellipsoid model in handleMove, so this proxy is never the source of
+          truth for the silhouette. */}
       <mesh
         ref={proxyRef}
-        scale={[1.75, 1.3, 1.4]}
+        scale={[1.86, 1.77, 1.83]}
         onPointerOver={(e) => {
           e.stopPropagation();
           onHover?.(true);
         }}
         onPointerOut={(e) => {
           e.stopPropagation();
+          phys.pressTarget = 0;
+          phys.pressing = false;
           onHover?.(false);
         }}
         onPointerMove={handleMove}
+        onPointerDown={handleDown}
+        onPointerUp={handleUp}
       >
         <sphereGeometry args={[1.0, 48, 32]} />
         <meshBasicMaterial
