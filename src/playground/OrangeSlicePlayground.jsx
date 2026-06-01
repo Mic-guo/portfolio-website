@@ -9,6 +9,8 @@ import {
   ROWS,
   STEPS,
 } from "./orangeSliceData";
+import OrangeSliceStage from "./OrangeSliceStage";
+import { T, inPromptGap } from "./orangeSliceTimeline";
 
 import "lenis/dist/lenis.css";
 
@@ -18,37 +20,6 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const seg = (p, start, end) =>
   end <= start ? (p >= start ? 1 : 0) : clamp((p - start) / (end - start), 0, 1);
 const lerp = (a, b, t) => a + (b - a) * t;
-
-/** Scroll timeline 0→1 — deterministic, scrubbable both directions. */
-const T = {
-  barIn: [0, 0.02],
-  discoveryPrompt: [0.02, 0.08],
-  runDiscovery: [0.08, 0.12],
-  revealRows: [0.12, 0.28],
-  gap1: [0.28, 0.3],
-  step1Prompt: [0.3, 0.36],
-  step1Run: [0.36, 0.4],
-  step1Reveal: [0.4, 0.42],
-  step1Fill: [0.42, 0.54],
-  gap2: [0.54, 0.56],
-  step2Prompt: [0.56, 0.62],
-  step2Run: [0.62, 0.66],
-  step2Reveal: [0.66, 0.68],
-  step2Fill: [0.68, 0.8],
-  gap3: [0.8, 0.82],
-  step3Prompt: [0.82, 0.88],
-  step3Run: [0.88, 0.92],
-  step3Reveal: [0.92, 0.94],
-  step3Fill: [0.94, 1],
-};
-
-function inPromptGap(p) {
-  return (
-    (p >= T.gap1[0] && p < T.gap1[1]) ||
-    (p >= T.gap2[0] && p < T.gap2[1]) ||
-    (p >= T.gap3[0] && p < T.gap3[1])
-  );
-}
 
 function runPhase(p, range) {
   const t = seg(p, range[0], range[1]);
@@ -252,13 +223,7 @@ function CommandBar({ scene }) {
   const { promptText, showPlaceholder, runState, barFlash, thinking, barIn } = scene;
 
   return (
-    <div
-      style={{
-        ...styles.commandBar,
-        opacity: barIn,
-        transform: `translate(-50%, ${lerp(24, 0, barIn)}px)`,
-      }}
-    >
+    <div style={{ ...styles.commandBar, opacity: barIn }}>
       <div style={{ ...styles.commandInner, ...(barFlash ? styles.commandFlash : {}) }}>
         <div style={{ ...styles.cmdIcon, ...(thinking ? styles.cmdIconThinking : {}) }}>
           <SparkleIcon spinning={thinking} />
@@ -380,7 +345,16 @@ function Cell({ colKey, row, value, state, reveal = 1 }) {
   );
 }
 
-function Spreadsheet({ scene }) {
+function ScreenApp({ scene }) {
+  return (
+    <div style={styles.screenApp}>
+      <SpreadsheetUI scene={scene} />
+      <CommandBar scene={scene} />
+    </div>
+  );
+}
+
+function SpreadsheetUI({ scene }) {
   const { rowVisible, columnVisible, columnReveal, cellStates } = scene;
   const visibleColumns = COLUMNS.filter(
     (col) => col.initial || columnVisible[col.key],
@@ -462,26 +436,40 @@ export default function OrangeSlicePlayground() {
   const scene = useMemo(() => deriveScene(progress), [progress]);
 
   useEffect(() => {
+    const scrollEl = scrollRef.current;
+    const pinEl = pinRef.current;
+    if (!scrollEl || !pinEl) return;
+
     const lenis = new Lenis({
+      autoRaf: false,
       duration: 1.1,
       smoothWheel: true,
     });
 
     lenis.on("scroll", ScrollTrigger.update);
 
-    const tick = (time) => {
-      lenis.raf(time);
-      requestAnimationFrame(tick);
+    const lenisRaf = (time) => {
+      lenis.raf(time * 1000);
     };
-    requestAnimationFrame(tick);
+    gsap.ticker.add(lenisRaf);
+    gsap.ticker.lagSmoothing(0);
+
+    const onLenisRefresh = () => lenis.resize();
+    ScrollTrigger.addEventListener("refresh", onLenisRefresh);
 
     const trigger = ScrollTrigger.create({
-      trigger: scrollRef.current,
+      trigger: scrollEl,
       start: "top top",
       end: "+=10000",
-      pin: pinRef.current,
+      pin: pinEl,
       scrub: 0.8,
+      invalidateOnRefresh: true,
       onUpdate: (self) => setProgress(self.progress),
+    });
+
+    requestAnimationFrame(() => {
+      lenis.resize();
+      ScrollTrigger.refresh();
     });
 
     const onKey = (e) => {
@@ -494,9 +482,10 @@ export default function OrangeSlicePlayground() {
 
     return () => {
       window.removeEventListener("keydown", onKey);
+      ScrollTrigger.removeEventListener("refresh", onLenisRefresh);
       trigger.kill();
+      gsap.ticker.remove(lenisRaf);
       lenis.destroy();
-      ScrollTrigger.getAll().forEach((t) => t.kill());
     };
   }, []);
 
@@ -505,13 +494,14 @@ export default function OrangeSlicePlayground() {
       <style>{keyframes}</style>
       <div ref={scrollRef} style={styles.scrollHost}>
         <div ref={pinRef} style={styles.viewport}>
+          <OrangeSliceStage progress={progress}>
+            <ScreenApp scene={scene} />
+          </OrangeSliceStage>
+
           <header style={styles.header}>
             <span style={styles.badge}>#orangeslice playground</span>
             <span style={styles.hint}>Scroll to scrub the demo · Esc resets</span>
           </header>
-
-          <Spreadsheet scene={scene} />
-          <CommandBar scene={scene} />
 
           <div style={styles.progressRail}>
             <div style={{ ...styles.progressFill, width: `${progress * 100}%` }} />
@@ -538,16 +528,15 @@ const keyframes = `
 
 const styles = {
   scrollHost: {
-    minHeight: "1000vh",
-    background: "#f5f5f5",
+    height: "1000vh",
+    background: "#070708",
   },
   viewport: {
     position: "relative",
     height: "100vh",
     overflow: "hidden",
-    background: "#fafafa",
-    fontFamily: '-apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif',
-    color: "#171717",
+    background: "#070708",
+    overscrollBehavior: "none",
   },
   header: {
     position: "absolute",
@@ -564,23 +553,30 @@ const styles = {
     fontSize: 11,
     letterSpacing: "0.14em",
     textTransform: "uppercase",
-    color: "rgba(23,23,23,0.45)",
+    color: "rgba(255,255,255,0.4)",
     fontFamily: 'ui-monospace, "SF Mono", Menlo, monospace',
   },
   hint: {
     fontSize: 11,
-    color: "rgba(23,23,23,0.35)",
+    color: "rgba(255,255,255,0.3)",
   },
-  sheetWrap: {
-    position: "absolute",
-    inset: "56px 32px 120px",
-    background: "#fff",
-    borderRadius: 8,
-    border: "1px solid #e5e5e5",
-    boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
+  screenApp: {
+    flex: 1,
+    minHeight: 0,
+    width: "100%",
     display: "flex",
     flexDirection: "column",
     overflow: "hidden",
+    background: "#fafafa",
+    pointerEvents: "none",
+  },
+  sheetWrap: {
+    flex: 1,
+    minHeight: 0,
+    display: "flex",
+    flexDirection: "column",
+    overflow: "hidden",
+    background: "#fff",
   },
   sheetToolbar: {
     display: "flex",
@@ -609,7 +605,8 @@ const styles = {
   },
   sheetScroll: {
     flex: 1,
-    overflow: "auto",
+    minHeight: 0,
+    overflow: "hidden",
   },
   table: {
     width: "100%",
@@ -642,11 +639,8 @@ const styles = {
     position: "sticky",
     top: 0,
     zIndex: 2,
-    transition: "opacity 0.05s linear, transform 0.05s linear",
   },
-  row: {
-    transition: "opacity 0.05s linear, transform 0.05s linear",
-  },
+  row: {},
   rowNum: {
     padding: "0 6px",
     fontSize: 11,
@@ -669,7 +663,6 @@ const styles = {
     overflow: "hidden",
     textOverflow: "ellipsis",
     whiteSpace: "nowrap",
-    transition: "opacity 0.05s linear, transform 0.05s linear",
   },
   cellRow: {
     display: "flex",
@@ -748,11 +741,12 @@ const styles = {
     fontWeight: 500,
   },
   commandBar: {
-    position: "absolute",
-    left: "50%",
-    bottom: 28,
-    zIndex: 10,
-    width: "min(640px, calc(100% - 48px))",
+    flexShrink: 0,
+    width: "100%",
+    padding: "8px 10px",
+    boxSizing: "border-box",
+    background: "#fafafa",
+    borderTop: "1px solid #e5e5e5",
     pointerEvents: "none",
   },
   commandInner: {
@@ -841,8 +835,9 @@ const styles = {
     bottom: 10,
     height: 3,
     borderRadius: 999,
-    background: "rgba(0,0,0,0.06)",
+    background: "rgba(255,255,255,0.08)",
     overflow: "hidden",
+    zIndex: 5,
   },
   progressFill: {
     height: "100%",
@@ -856,7 +851,8 @@ const styles = {
     fontSize: 10,
     letterSpacing: "0.2em",
     textTransform: "uppercase",
-    color: "rgba(23,23,23,0.35)",
+    color: "rgba(255,255,255,0.28)",
     fontFamily: 'ui-monospace, "SF Mono", Menlo, monospace',
+    zIndex: 5,
   },
 };
