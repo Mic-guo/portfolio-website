@@ -10,6 +10,7 @@ import {
   STEPS,
 } from "./orangeSliceData";
 import OrangeSliceStage from "./OrangeSliceStage";
+import { applyCameraTransforms } from "./orangeSliceMotion";
 import { T, inPromptGap } from "./orangeSliceTimeline";
 
 import "lenis/dist/lenis.css";
@@ -330,17 +331,17 @@ function CellContent({ colKey, row, value, state }) {
   return <span style={styles.cellText}>{value}</span>;
 }
 
-function Cell({ colKey, row, value, state, reveal = 1 }) {
-  const hidden = reveal <= 0;
+function Cell({ colKey, row, value, state, reveal = 1, columnActive = true }) {
+  const visible = columnActive && reveal > 0;
   return (
     <td
       style={{
         ...styles.cell,
-        opacity: hidden ? 0 : 1,
-        transform: hidden ? "translateX(6px)" : `translateX(${lerp(6, 0, reveal)}px)`,
+        opacity: visible ? 1 : 0,
       }}
+      aria-hidden={!columnActive}
     >
-      <CellContent colKey={colKey} row={row} value={value} state={state} />
+      <CellContent colKey={colKey} row={row} value={value} state={columnActive ? state : "empty"} />
     </td>
   );
 }
@@ -356,9 +357,6 @@ function ScreenApp({ scene }) {
 
 function SpreadsheetUI({ scene }) {
   const { rowVisible, columnVisible, columnReveal, cellStates } = scene;
-  const visibleColumns = COLUMNS.filter(
-    (col) => col.initial || columnVisible[col.key],
-  );
 
   return (
     <div style={styles.sheetWrap}>
@@ -371,23 +369,31 @@ function SpreadsheetUI({ scene }) {
       </div>
       <div style={styles.sheetScroll}>
         <table style={styles.table}>
+          <colgroup>
+            <col style={{ width: 42 }} />
+            {COLUMNS.map((col) => (
+              <col key={col.key} style={{ width: col.width }} />
+            ))}
+          </colgroup>
           <thead>
             <tr>
               <th style={styles.rowNumHead}>#</th>
-              {visibleColumns.map((col) => (
-                <th
-                  key={col.key}
-                  style={{
-                    ...styles.headCell,
-                    width: col.width,
-                    minWidth: col.width,
-                    opacity: col.initial ? 1 : columnReveal[col.key],
-                    transform: `translateX(${lerp(6, 0, col.initial ? 1 : columnReveal[col.key])}px)`,
-                  }}
-                >
-                  {col.label}
-                </th>
-              ))}
+              {COLUMNS.map((col) => {
+                const columnActive = col.initial || columnVisible[col.key];
+                const reveal = col.initial ? 1 : columnReveal[col.key];
+                return (
+                  <th
+                    key={col.key}
+                    style={{
+                      ...styles.headCell,
+                      opacity: columnActive ? reveal : 0,
+                    }}
+                    aria-hidden={!columnActive}
+                  >
+                    {col.label}
+                  </th>
+                );
+              })}
             </tr>
           </thead>
           <tbody>
@@ -399,7 +405,8 @@ function SpreadsheetUI({ scene }) {
               return (
                 <tr key={row.company} style={styles.row}>
                   <td style={{ ...styles.rowNum, opacity: rowNumVis }}>{rowIdx + 1}</td>
-                  {visibleColumns.map((col) => {
+                  {COLUMNS.map((col) => {
+                    const columnActive = col.initial || columnVisible[col.key];
                     const key = `${rowIdx}-${col.key}`;
                     const state = col.initial ? "filled" : cellStates[key] ?? "empty";
                     const initialVis =
@@ -415,6 +422,7 @@ function SpreadsheetUI({ scene }) {
                         value={row[col.key]}
                         state={col.initial ? (initialVis > 0 ? state : "empty") : state}
                         reveal={reveal}
+                        columnActive={columnActive}
                       />
                     );
                   })}
@@ -431,6 +439,8 @@ function SpreadsheetUI({ scene }) {
 export default function OrangeSlicePlayground() {
   const scrollRef = useRef(null);
   const pinRef = useRef(null);
+  const monitorRef = useRef(null);
+  const panRef = useRef(null);
   const [progress, setProgress] = useState(0);
 
   const scene = useMemo(() => deriveScene(progress), [progress]);
@@ -439,6 +449,13 @@ export default function OrangeSlicePlayground() {
     const scrollEl = scrollRef.current;
     const pinEl = pinRef.current;
     if (!scrollEl || !pinEl) return;
+
+    const applyProgress = (value) => {
+      applyCameraTransforms(monitorRef.current, panRef.current, value);
+      setProgress(value);
+    };
+
+    applyProgress(0);
 
     const lenis = new Lenis({
       autoRaf: false,
@@ -462,20 +479,23 @@ export default function OrangeSlicePlayground() {
       start: "top top",
       end: "+=10000",
       pin: pinEl,
-      scrub: 0.8,
+      scrub: true,
       invalidateOnRefresh: true,
-      onUpdate: (self) => setProgress(self.progress),
+      onUpdate: (self) => {
+        applyProgress(self.progress);
+      },
     });
 
     requestAnimationFrame(() => {
       lenis.resize();
       ScrollTrigger.refresh();
+      applyProgress(trigger.progress);
     });
 
     const onKey = (e) => {
       if (e.key === "Escape") {
         lenis.scrollTo(0, { immediate: true });
-        setProgress(0);
+        applyProgress(0);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -494,7 +514,7 @@ export default function OrangeSlicePlayground() {
       <style>{keyframes}</style>
       <div ref={scrollRef} style={styles.scrollHost}>
         <div ref={pinRef} style={styles.viewport}>
-          <OrangeSliceStage progress={progress}>
+          <OrangeSliceStage monitorRef={monitorRef} panRef={panRef}>
             <ScreenApp scene={scene} />
           </OrangeSliceStage>
 
@@ -623,9 +643,6 @@ const styles = {
     borderRight: "1px solid #e5e5e5",
     borderBottom: "1px solid #e5e5e5",
     background: "#fafafa",
-    position: "sticky",
-    top: 0,
-    zIndex: 2,
   },
   headCell: {
     padding: "8px 10px",
@@ -636,9 +653,6 @@ const styles = {
     borderRight: "1px solid #e5e5e5",
     borderBottom: "1px solid #e5e5e5",
     background: "#fafafa",
-    position: "sticky",
-    top: 0,
-    zIndex: 2,
   },
   row: {},
   rowNum: {
