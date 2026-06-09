@@ -2,11 +2,11 @@
   "id": "desk",
   "label": "desk camera",
   "position": [
-    4,
-    7,
-    9
+    5.8,
+    10.1,
+    13.1
   ],
-  "fov": 50,
+  "fov": 54,
   "motion": {
     "smoothing": 0.055,
     "follow": 0.16,
@@ -15,16 +15,16 @@
         "id": "shot-0",
         "at": 0,
         "position": [
-          4,
-          7,
-          9
+          5.8,
+          10.1,
+          13.1
         ],
         "target": [
           0,
           0.1,
           0
         ],
-        "fov": 50,
+        "fov": 54,
         "path": "linear",
         "ease": "smooth",
         "swing": "shortest"
@@ -33,16 +33,16 @@
         "id": "shot-1",
         "at": 0.16,
         "position": [
-          4,
-          7,
-          9
+          5.8,
+          10.1,
+          13.1
         ],
         "target": [
           0,
           0.1,
           0
         ],
-        "fov": 50,
+        "fov": 54,
         "path": "linear",
         "ease": "smooth",
         "swing": "shortest"

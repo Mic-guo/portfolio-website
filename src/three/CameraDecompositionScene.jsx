@@ -23,6 +23,41 @@ const BODY_PICKER_COMPONENT_LIMIT = 80;
 const BODY_PICKER_MIN_TRIANGLES = 18;
 const DEFAULT_BODY_DOOR_PART_ID = "body-78";
 const LENS_AXIS_CENTER = [0.47, -0.26];
+// Lens-front accessories, measured via scripts/inspect-lens-front.mjs. The
+// lens proper is a plain cylinder (barrel radius ~1.34 ending at the front
+// glass, z ~1.92). The pinch cap is the disc/skirt/tab cluster living in
+// z [2.04, 2.45] within radius 1.56 of the lens axis. The hood is everything
+// else at the front: the petal shells reaching past z 2.47 (out to z 3.425)
+// plus every piece in front of z 1.9 wider than the barrel (flange, rings,
+// bayonet collar — r > 1.4).
+const HOOD_MIN_FRONT_Z = 2.47;
+const HOOD_COLLAR_MIN_Z = 1.9;
+const HOOD_COLLAR_MIN_RADIUS = 1.4;
+const CAP_MIN_Z = 2.04;
+const CAP_MAX_RADIUS = 1.56;
+// Detach phases in cameraExplodeProgress space (which peaks around 0.76).
+// Removal order: the hood bayonet-twists off first, then the cap pinch-pulls
+// straight off while the lens is still on the body, and finally the lens
+// twist-unlocks from the body and pulls free. Reversed scroll reassembles in
+// the opposite order. Everything finishes below the ~0.7 explode plateau so
+// nothing moves during the SD-card beat.
+// Parking stays z-ordered so transit lanes never cross: hood farthest at
+// [4.51, 6.03], cap at [3.55, 3.91], and the pulled lens nose stops at 3.37.
+const HOOD_TWIST_START = 0.02;
+const HOOD_TWIST_END = 0.14;
+const HOOD_TWIST_ANGLE = -Math.PI * 0.34;
+const HOOD_PULL_START = 0.16;
+const HOOD_PULL_END = 0.28;
+const HOOD_PULL_TO = [-0.12, 0.35, 2.6];
+const CAP_PULL_START = 0.3;
+const CAP_PULL_END = 0.4;
+const CAP_PULL_DISTANCE = 1.5;
+const LENS_TWIST_START = 0.42;
+const LENS_TWIST_END = 0.52;
+const LENS_TWIST_ANGLE = Math.PI * 0.26;
+const LENS_PULL_START = 0.54;
+const LENS_PULL_END = 0.66;
+const LENS_PULL_DISTANCE = 1.45;
 const DEFAULT_SD_TIMELINE = {
   freezeStart: 0.7,
   freezeEnd: 0.96,
@@ -265,17 +300,20 @@ function getConnectedComponents(geometry) {
       components.set(root, {
         triangles: [],
         bounds: new THREE.Box3(),
+        maxRadius: 0,
       });
     }
 
     const component = components.get(root);
     component.triangles.push(triangle);
     vertices.forEach((vertex) => {
-      component.bounds.expandByPoint(new THREE.Vector3(
-        position.getX(vertex),
-        position.getY(vertex),
-        position.getZ(vertex),
-      ));
+      const x = position.getX(vertex);
+      const y = position.getY(vertex);
+      component.bounds.expandByPoint(new THREE.Vector3(x, y, position.getZ(vertex)));
+      component.maxRadius = Math.max(
+        component.maxRadius,
+        Math.hypot(x - LENS_AXIS_CENTER[0], y - LENS_AXIS_CENTER[1]),
+      );
     });
   }
 
@@ -320,17 +358,26 @@ function buildGeometryFromTriangles(sourceGeometry, triangles) {
   return geometry;
 }
 
+// Cap is matched before the collar rule so its skirt (r 1.525) isn't stolen
+// by the hood's wider-than-barrel test.
+function getLensPartKey(component) {
+  if (component.bounds.max.z > HOOD_MIN_FRONT_Z) return "hood";
+  if (component.bounds.min.z > CAP_MIN_Z && component.maxRadius < CAP_MAX_RADIUS) return "cap";
+  if (component.bounds.min.z > HOOD_COLLAR_MIN_Z && component.maxRadius > HOOD_COLLAR_MIN_RADIUS) return "hood";
+  return "lens";
+}
+
 function getModelAssemblies(components) {
   const assemblies = {
     body: [],
-    lensMount: [],
-    rearBarrel: [],
-    frontBarrel: [],
-    frontLens: [],
+    lens: [],
+    hood: [],
+    cap: [],
   };
 
   components.forEach((component) => {
-    assemblies[getAssemblyKey(component)].push(...component.triangles);
+    const key = getAssemblyKey(component) === "body" ? "body" : getLensPartKey(component);
+    assemblies[key].push(...component.triangles);
   });
 
   return assemblies;
@@ -423,11 +470,15 @@ function extractModelParts(scene) {
       start: BODY_EXPLODE_START,
       end: BODY_EXPLODE_END,
     },
-    { key: "lensMount", triangles: assemblies.lensMount, to: [0, 0, 0.3], start: 0.2, end: 0.74 },
-    { key: "rearBarrel", triangles: assemblies.rearBarrel, to: [0, 0, 0.78], start: 0.22, end: 0.74 },
-    { key: "frontBarrel", triangles: assemblies.frontBarrel, to: [0, 0, 1.22], start: 0.24, end: 0.76 },
-    { key: "frontLens", triangles: assemblies.frontLens, to: [0, 0, 1.68], start: 0.26, end: 0.78 },
   ];
+
+  // Each front-of-camera unit detaches rigidly on its own: the cap pinch-pulls
+  // off, the hood twists off, and the lens bayonet-unlocks from the body.
+  const lensParts = ["lens", "hood", "cap"].map((key) => ({
+    key,
+    geometry: buildGeometryFromTriangles(baseGeometry, assemblies[key]),
+    material: cloneMaterial(material),
+  }));
 
   return {
     parts: parts.map((part) => ({
@@ -441,6 +492,7 @@ function extractModelParts(scene) {
         0,
       ],
     })),
+    lensParts,
     bodyPickerParts: getBodyPickerParts(baseGeometry, bodyPickerComponents),
     doorPart,
     scale: 2.9 / Math.max(size.x, size.y, size.z),
@@ -467,6 +519,80 @@ function PartMesh({ part }) {
   });
 
   return <mesh ref={ref} geometry={part.geometry} material={part.material} raycast={() => null} />;
+}
+
+function detachPhase(start, end) {
+  return easeInOut(clamp01((cameraExplodeProgress - start) / (end - start)));
+}
+
+// Real removal sequence at the front of the camera. Each piece pivots on the
+// lens optical axis (nested groups), so twists spin in place instead of
+// swinging around the model origin:
+// - hood: its own short bayonet twist (opposite direction), then off
+// - cap: pinch + straight pull off the lens front, no twist
+// - lens: twist to unlock the mount, then pull straight off the body
+function LensAssembly({ parts }) {
+  const lensRef = useRef();
+  const hoodRef = useRef();
+  const capRef = useRef();
+  const byKey = Object.fromEntries(parts.map((part) => [part.key, part]));
+  const meshOffset = [-LENS_AXIS_CENTER[0], -LENS_AXIS_CENTER[1], 0];
+
+  useFrame(({ clock }) => {
+    if (!lensRef.current || !hoodRef.current || !capRef.current) return;
+    const time = clock.elapsedTime;
+
+    // Lateral "set aside" terms ease in with pull^2 so each piece travels
+    // straight out along the axis first and only then floats off to its
+    // parking spot.
+    const hoodTwist = detachPhase(HOOD_TWIST_START, HOOD_TWIST_END);
+    const hoodPull = detachPhase(HOOD_PULL_START, HOOD_PULL_END);
+    const hoodAside = hoodPull * hoodPull;
+    hoodRef.current.position.set(
+      HOOD_PULL_TO[0] * hoodAside,
+      HOOD_PULL_TO[1] * hoodAside + Math.sin(time * 0.5 + 2.1) * 0.012 * hoodPull,
+      HOOD_PULL_TO[2] * hoodPull,
+    );
+    hoodRef.current.rotation.set(-0.12 * hoodAside, 0, HOOD_TWIST_ANGLE * hoodTwist);
+
+    const lensTwist = detachPhase(LENS_TWIST_START, LENS_TWIST_END);
+    const lensPull = detachPhase(LENS_PULL_START, LENS_PULL_END);
+    lensRef.current.rotation.set(-0.05 * lensPull, 0, LENS_TWIST_ANGLE * lensTwist);
+    lensRef.current.position.set(
+      0,
+      Math.sin(time * 0.5) * 0.01 * lensPull + 0.06 * lensPull,
+      LENS_PULL_DISTANCE * lensPull,
+    );
+
+    // Cap detaches before the lens leaves the body, so it moves in the model
+    // frame (sibling of the lens) and parks beyond the lens's final nose.
+    const capPull = detachPhase(CAP_PULL_START, CAP_PULL_END);
+    capRef.current.position.set(
+      0,
+      Math.sin(time * 0.55) * 0.012 * capPull,
+      CAP_PULL_DISTANCE * capPull,
+    );
+  });
+
+  return (
+    <group position={[LENS_AXIS_CENTER[0], LENS_AXIS_CENTER[1], 0]}>
+      <group ref={hoodRef}>
+        <group position={meshOffset}>
+          <mesh geometry={byKey.hood.geometry} material={byKey.hood.material} raycast={() => null} />
+        </group>
+      </group>
+      <group ref={lensRef}>
+        <group position={meshOffset}>
+          <mesh geometry={byKey.lens.geometry} material={byKey.lens.material} raycast={() => null} />
+        </group>
+      </group>
+      <group ref={capRef}>
+        <group position={meshOffset}>
+          <mesh geometry={byKey.cap.geometry} material={byKey.cap.material} raycast={() => null} />
+        </group>
+      </group>
+    </group>
+  );
 }
 
 function CameraInternalGlass() {
@@ -828,6 +954,7 @@ function SonyCameraModel({
       {model.parts.map((part) => (
         <PartMesh key={part.key} part={part} />
       ))}
+      <LensAssembly parts={model.lensParts} />
       <CameraInternalGlass />
       {debugVisible && (
         <>
