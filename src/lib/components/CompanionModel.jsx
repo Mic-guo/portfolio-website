@@ -28,6 +28,7 @@ export default function CompanionModel({
   src,
   position = [0, 0, 0],
   anchor,
+  orientation = [0, 0, 0],
   targetHeight = 1.5,
   rotation,
   spinSpeed = 0,
@@ -50,7 +51,7 @@ export default function CompanionModel({
 
   // Convert raw-GLB coordinates into host world space. Mirrors what
   // SceneProvider does to the host model: world = (raw - root.center) * scale.
-  const placement = useMemo(() => {
+  const anchorBase = useMemo(() => {
     const root = manifest.root.bounds.center;
 
     if (anchor?.node) {
@@ -70,19 +71,31 @@ export default function CompanionModel({
             : anchor.face === "center"
               ? center.y
               : max.y;
-        const [ox, oy, oz] = anchor.offset ?? [0, 0, 0];
         return [
-          (center.x - root.x) * hostScale + ox,
-          (faceY - root.y) * hostScale + oy,
-          (center.z - root.z) * hostScale + oz,
+          (center.x - root.x) * hostScale,
+          (faceY - root.y) * hostScale,
+          (center.z - root.z) * hostScale,
         ];
       }
     }
 
     const floorY = (manifest.root.bounds.min.y - root.y) * hostScale;
+    return [0, floorY, 0];
+  }, [anchor?.face, anchor?.node, manifest, hostScale]);
+
+  const placement = useMemo(() => {
+    if (anchor?.node) {
+      const [ox, oy, oz] = anchor.offset ?? [0, 0, 0];
+      return [anchorBase[0] + ox, anchorBase[1] + oy, anchorBase[2] + oz];
+    }
     const [px, py, pz] = position;
-    return [px, floorY + py, pz];
-  }, [anchor, position, manifest, hostScale]);
+    return [px, anchorBase[1] + py, pz];
+  }, [anchor?.node, anchor?.offset, anchorBase, position]);
+
+  const initialRotation = useMemo(
+    () => new THREE.Euler(...orientation, "XYZ"),
+    [orientation],
+  );
 
   useEffect(() => {
     scene.traverse((obj) => {
@@ -110,7 +123,7 @@ export default function CompanionModel({
 
   return (
     <group ref={revolveRef}>
-      <group position={placement}>
+      <group position={placement} rotation={initialRotation}>
         <group ref={spinRef} scale={scaleFactor}>
           <group position={centerOffset}>
             <primitive object={scene} {...inspectorProps} />
