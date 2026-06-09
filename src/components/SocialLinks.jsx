@@ -13,7 +13,7 @@ const links = [
     icon: FaInstagram,
     label: "Instagram",
   },
-  { href: "mailto:mickeyg@umich.edu", icon: MdEmail, label: "Email" },
+  { href: "mailto:michaelguo1212@gmail.com", icon: MdEmail, label: "Email" },
 ];
 
 export default function SocialLinks({ className = "" }) {
