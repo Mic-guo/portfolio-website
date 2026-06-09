@@ -1,14 +1,22 @@
-import { FaGithub, FaLinkedin, FaInstagram } from 'react-icons/fa'
-import { MdEmail } from 'react-icons/md'
+import { FaGithub, FaLinkedin, FaInstagram } from "react-icons/fa";
+import { MdEmail } from "react-icons/md";
 
 const links = [
-  { href: 'https://github.com/Mic-Guo', icon: FaGithub, label: 'GitHub' },
-  { href: 'https://www.linkedin.com/in/Mic-guo/', icon: FaLinkedin, label: 'LinkedIn' },
-  { href: 'https://www.instagram.com/michael.goop/', icon: FaInstagram, label: 'Instagram' },
-  { href: 'mailto:mickeyg@umich.edu', icon: MdEmail, label: 'Email' },
-]
+  { href: "https://github.com/Mic-Guo", icon: FaGithub, label: "GitHub" },
+  {
+    href: "https://www.linkedin.com/in/Micguo/",
+    icon: FaLinkedin,
+    label: "LinkedIn",
+  },
+  {
+    href: "https://www.instagram.com/michael.goop/",
+    icon: FaInstagram,
+    label: "Instagram",
+  },
+  { href: "mailto:mickeyg@umich.edu", icon: MdEmail, label: "Email" },
+];
 
-export default function SocialLinks({ className = '' }) {
+export default function SocialLinks({ className = "" }) {
   return (
     <div className={`flex items-center gap-5 ${className}`}>
       {links.map(({ href, icon: Icon, label }) => (
@@ -24,5 +32,5 @@ export default function SocialLinks({ className = '' }) {
         </a>
       ))}
     </div>
-  )
+  );
 }
