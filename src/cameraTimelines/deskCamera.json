@@ -1,0 +1,88 @@
+{
+  "id": "desk",
+  "label": "desk camera",
+  "position": [
+    4,
+    7,
+    9
+  ],
+  "fov": 50,
+  "motion": {
+    "smoothing": 0.055,
+    "follow": 0.16,
+    "shots": [
+      {
+        "id": "shot-0",
+        "at": 0,
+        "position": [
+          4,
+          7,
+          9
+        ],
+        "target": [
+          0,
+          0.1,
+          0
+        ],
+        "fov": 50,
+        "path": "linear",
+        "ease": "smooth",
+        "swing": "shortest"
+      },
+      {
+        "id": "shot-1",
+        "at": 0.16,
+        "position": [
+          4,
+          7,
+          9
+        ],
+        "target": [
+          0,
+          0.1,
+          0
+        ],
+        "fov": 50,
+        "path": "linear",
+        "ease": "smooth",
+        "swing": "shortest"
+      },
+      {
+        "id": "shot-2",
+        "at": 0.5624,
+        "fov": 31.0001,
+        "path": "orbit",
+        "ease": "smooth",
+        "position": [
+          3.3009,
+          1.0678,
+          2.1572
+        ],
+        "target": [
+          2.4652,
+          0.8424,
+          -0.1673
+        ],
+        "swing": "shortest"
+      },
+      {
+        "id": "shot-4",
+        "at": 1,
+        "fov": 36,
+        "path": "orbit",
+        "ease": "smooth",
+        "swing": "long",
+        "position": [
+          -1.3033,
+          1.8669,
+          0.0045
+        ],
+        "target": [
+          1.6874,
+          1.0488,
+          0.0243
+        ]
+      }
+    ]
+  }
+}

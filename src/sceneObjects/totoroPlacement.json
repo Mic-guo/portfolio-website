@@ -1,0 +1,18 @@
+{
+  "id": "totoro",
+  "anchor": {
+    "node": "wood",
+    "face": "top",
+    "offset": [
+      1.1755,
+      0,
+      -1.3954
+    ]
+  },
+  "rotation": [
+    0,
+    0.775,
+    0
+  ],
+  "targetHeight": 0.55
+}
