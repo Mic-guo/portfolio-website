@@ -11,7 +11,10 @@ export default function DeskPlayground() {
   useEffect(() => {
     if (!import.meta.env.DEV) return;
     const isTextField = (el) =>
-      el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable);
+      el &&
+      (el.tagName === "INPUT" ||
+        el.tagName === "TEXTAREA" ||
+        el.isContentEditable);
     const onKey = (e) => {
       if (isTextField(e.target)) return;
       if (e.key === "i" || e.key === "I") {
@@ -96,7 +99,6 @@ export default function DeskPlayground() {
           },
           driver: scrollProgressRef,
         }}
-        rotation={{ axis: "y", driver: scrollProgressRef, smoothing: 0.04 }}
         objectTransforms={objectTransforms}
         inspector={inspectorOn}
         style={{
@@ -111,12 +113,16 @@ export default function DeskPlayground() {
           anchor={totoroPlacement.anchor}
           orientation={totoroPlacement.rotation}
           targetHeight={totoroPlacement.targetHeight}
-          rotation={{ axis: "y", driver: scrollProgressRef, smoothing: 0.04 }}
         />
       </ModelViewer>
       <div
         aria-hidden="true"
-        style={{ position: "relative", zIndex: 10, height: "400vh", pointerEvents: "none" }}
+        style={{
+          position: "relative",
+          zIndex: 10,
+          height: "400vh",
+          pointerEvents: "none",
+        }}
       />
       {import.meta.env.DEV && !inspectorOn && (
         <div
