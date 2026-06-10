@@ -7,6 +7,7 @@ export { default as SceneLights } from "./components/SceneLights";
 export { default as CompanionModel } from "./components/CompanionModel";
 export { default as ScenePlatform } from "./components/ScenePlatform";
 export { default as LaptopScreen } from "./components/LaptopScreen";
+export { default as IntroTitle } from "./components/IntroTitle";
 export {
   SceneProvider,
   useManifest,

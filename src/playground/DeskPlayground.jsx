@@ -4,6 +4,7 @@ import {
   CompanionModel,
   ScenePlatform,
   LaptopScreen,
+  IntroTitle,
 } from "../lib";
 import CameraDecompositionScene from "../three/CameraDecompositionScene";
 import deskCamera from "../cameraTimelines/deskCamera.json";
@@ -101,6 +102,25 @@ export default function DeskPlayground() {
   const scrollAnimRef = useRef(0);
   const [inspectorOn, setInspectorOn] = useState(false);
   const [cameraActive, setCameraActive] = useState(false);
+  // Mute control: all synthesized audio routes through a master gain node so
+  // one toggle silences everything. mutedRef mirrors the state so the audio
+  // effect (which re-runs on cameraActive) picks up the current value.
+  const [muted, setMuted] = useState(false);
+  const mutedRef = useRef(false);
+  const audioCtxRef = useRef(null);
+  const masterGainRef = useRef(null);
+  const toggleMute = () => {
+    const next = !mutedRef.current;
+    mutedRef.current = next;
+    setMuted(next);
+    const ctx = audioCtxRef.current;
+    const master = masterGainRef.current;
+    if (ctx && master) {
+      // Unmuting is itself a user gesture, so it can unlock a suspended ctx.
+      if (!next && ctx.state === "suspended") ctx.resume();
+      master.gain.setTargetAtTime(next ? 0 : 1, ctx.currentTime, 0.01);
+    }
+  };
   const activateCamera = () => {
     document.body.style.cursor = "";
     cancelAnimationFrame(scrollAnimRef.current);
@@ -178,6 +198,7 @@ export default function DeskPlayground() {
     let armed = window.scrollY <= 50;
     let cycling = false;
     let ctx = null;
+    let master = null;
     let buzzOsc = null;
     let buzzGain = null;
 
@@ -185,6 +206,13 @@ export default function DeskPlayground() {
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
       ctx = new AudioCtx();
       if (ctx.state === "suspended") ctx.resume();
+      // Master bus: everything connects here instead of ctx.destination so
+      // the mute button can silence all sound with one gain.
+      master = ctx.createGain();
+      master.gain.value = mutedRef.current ? 0 : 1;
+      master.connect(ctx.destination);
+      audioCtxRef.current = ctx;
+      masterGainRef.current = master;
       buzzOsc = ctx.createOscillator();
       buzzOsc.type = "sawtooth";
       buzzOsc.frequency.value = 110; // mains-hum-ish
@@ -195,7 +223,7 @@ export default function DeskPlayground() {
       buzzGain.gain.value = 0;
       buzzOsc.connect(lowpass);
       lowpass.connect(buzzGain);
-      buzzGain.connect(ctx.destination);
+      buzzGain.connect(master);
       buzzOsc.start();
     } catch {
       ctx = null;
@@ -208,40 +236,96 @@ export default function DeskPlayground() {
     };
 
     const playBreak = () => {
-      if (!ctx || ctx.state !== "running") return;
+      if (!ctx || ctx.state !== "running" || !master) return;
       const t0 = ctx.currentTime;
-      // Filament pop: short decaying noise burst through a bandpass.
-      const len = 0.09;
-      const buffer = ctx.createBuffer(1, ctx.sampleRate * len, ctx.sampleRate);
-      const data = buffer.getChannelData(0);
-      for (let i = 0; i < data.length; i += 1) {
-        data[i] = (Math.random() * 2 - 1) * (1 - i / data.length);
+      // Real filament burnout = one sharp broadband "tick" (the filament
+      // snapping), a few ms of electrical fizz as the arc dies, and a small
+      // low-end thump from the envelope. No long musical ring — a clean sine
+      // ping reads as cartoon sfx, not a dying bulb.
+
+      // 1) Snap: ~20ms broadband click, highpassed so it's all attack.
+      const snapLen = 0.02;
+      const snapBuf = ctx.createBuffer(
+        1,
+        Math.ceil(ctx.sampleRate * snapLen),
+        ctx.sampleRate,
+      );
+      const snapData = snapBuf.getChannelData(0);
+      for (let i = 0; i < snapData.length; i += 1) {
+        const env = Math.pow(1 - i / snapData.length, 2.5);
+        snapData[i] = (Math.random() * 2 - 1) * env;
       }
-      const noise = ctx.createBufferSource();
-      noise.buffer = buffer;
-      const bandpass = ctx.createBiquadFilter();
-      bandpass.type = "bandpass";
-      bandpass.frequency.value = 2400;
-      bandpass.Q.value = 0.8;
-      const noiseGain = ctx.createGain();
-      noiseGain.gain.setValueAtTime(0.5, t0);
-      noiseGain.gain.exponentialRampToValueAtTime(0.001, t0 + len);
-      noise.connect(bandpass);
-      bandpass.connect(noiseGain);
-      noiseGain.connect(ctx.destination);
-      noise.start(t0);
-      // Glass ping ringing out after the pop.
-      const ping = ctx.createOscillator();
-      ping.type = "sine";
-      ping.frequency.setValueAtTime(3100, t0);
-      ping.frequency.exponentialRampToValueAtTime(2300, t0 + 0.28);
-      const pingGain = ctx.createGain();
-      pingGain.gain.setValueAtTime(0.1, t0);
-      pingGain.gain.exponentialRampToValueAtTime(0.0008, t0 + 0.32);
-      ping.connect(pingGain);
-      pingGain.connect(ctx.destination);
-      ping.start(t0);
-      ping.stop(t0 + 0.35);
+      const snap = ctx.createBufferSource();
+      snap.buffer = snapBuf;
+      const snapHp = ctx.createBiquadFilter();
+      snapHp.type = "highpass";
+      snapHp.frequency.value = 1800;
+      const snapGain = ctx.createGain();
+      snapGain.gain.value = 0.55;
+      snap.connect(snapHp);
+      snapHp.connect(snapGain);
+      snapGain.connect(master);
+      snap.start(t0);
+
+      // 2) Arc fizz: ~90ms of sparse crackle (most samples silent, random
+      // spikes), bandpassed high — the brief sizzle as the arc extinguishes.
+      const fizzLen = 0.09;
+      const fizzBuf = ctx.createBuffer(
+        1,
+        Math.ceil(ctx.sampleRate * fizzLen),
+        ctx.sampleRate,
+      );
+      const fizzData = fizzBuf.getChannelData(0);
+      for (let i = 0; i < fizzData.length; i += 1) {
+        if (Math.random() < 0.12) {
+          const env = 1 - i / fizzData.length;
+          fizzData[i] = (Math.random() * 2 - 1) * env * env;
+        }
+      }
+      const fizz = ctx.createBufferSource();
+      fizz.buffer = fizzBuf;
+      const fizzBp = ctx.createBiquadFilter();
+      fizzBp.type = "bandpass";
+      fizzBp.frequency.value = 4200;
+      fizzBp.Q.value = 0.7;
+      const fizzGain = ctx.createGain();
+      fizzGain.gain.setValueAtTime(0.4, t0);
+      fizzGain.gain.exponentialRampToValueAtTime(0.001, t0 + fizzLen);
+      fizz.connect(fizzBp);
+      fizzBp.connect(fizzGain);
+      fizzGain.connect(master);
+      fizz.start(t0 + 0.004);
+
+      // 3) Thump: quiet pitch-dropping sine gives the pop its body.
+      const thump = ctx.createOscillator();
+      thump.type = "sine";
+      thump.frequency.setValueAtTime(150, t0);
+      thump.frequency.exponentialRampToValueAtTime(45, t0 + 0.08);
+      const thumpGain = ctx.createGain();
+      thumpGain.gain.setValueAtTime(0.18, t0);
+      thumpGain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.09);
+      thump.connect(thumpGain);
+      thumpGain.connect(master);
+      thump.start(t0);
+      thump.stop(t0 + 0.1);
+
+      // 4) Faint glass tink: two inharmonic partials, very quiet and damped
+      // fast — the envelope flexing, not shattering.
+      for (const [freq, gain] of [
+        [5230, 0.025],
+        [7480, 0.014],
+      ]) {
+        const osc = ctx.createOscillator();
+        osc.type = "sine";
+        osc.frequency.value = freq;
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(gain, t0 + 0.006);
+        g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.1);
+        osc.connect(g);
+        g.connect(master);
+        osc.start(t0 + 0.006);
+        osc.stop(t0 + 0.12);
+      }
     };
 
     const startCycle = () => {
@@ -332,6 +416,10 @@ export default function DeskPlayground() {
       window.removeEventListener("scroll", onScroll);
       window.removeEventListener("pointerdown", onPointerDown);
       flickerRef.current = 0;
+      if (audioCtxRef.current === ctx) {
+        audioCtxRef.current = null;
+        masterGainRef.current = null;
+      }
       try {
         buzzOsc?.stop();
         ctx?.close();
@@ -487,6 +575,19 @@ export default function DeskPlayground() {
             zIndex: 0,
           }}
         >
+          {/* Floating title card: faces the initial camera straight on, and
+            the scroll cinematic flies past it (it also fades out over early
+            scroll). Pose comes from the same timeline JSON as the camera so
+            they can never drift apart. */}
+          <IntroTitle
+            camera={{
+              position: deskCamera.position,
+              target: deskCamera.motion.shots[0].target,
+              fov: deskCamera.fov,
+            }}
+            driver={scrollProgressRef}
+            titles={["Software Engineer", "Web Developer", "Photographer"]}
+          />
           {/* Rounded-square wooden slab the desk/chair rest on; catches the
             spotlight pool and shadows, and fades out with scroll alongside
             the spot. */}
@@ -529,6 +630,77 @@ export default function DeskPlayground() {
           pointerEvents: "none",
         }}
       />
+      {/* Always-visible mute toggle for the synthesized scene audio: a
+        three-bar waveform (short-long-short) that resonates while sound is
+        on; muting rotates the bars flat so they converge into a single
+        stationary line. */}
+      <style>{`
+        .mute-wave { position: relative; width: 22px; height: 22px; display: block; }
+        .mute-wave i {
+          position: absolute; left: 50%; top: 50%;
+          width: 2.5px; height: 16px; margin: -8px 0 0 -1.25px;
+          border-radius: 2px; background: currentColor;
+          transition: transform 420ms cubic-bezier(0.34, 1.3, 0.4, 1);
+        }
+        /* Resonating: sides sway short, middle swells long, out of phase.
+           The 420ms animation-delay lets the unmute morph (flatline → bars)
+           finish first; each 0% keyframe matches the static pose below, so
+           the resonance takes over without a snap. */
+        .mute-wave i:nth-child(1) { animation: mute-wave-side 1100ms ease-in-out 420ms infinite; }
+        .mute-wave i:nth-child(2) { animation: mute-wave-mid 1100ms ease-in-out 420ms infinite; }
+        .mute-wave i:nth-child(3) { animation: mute-wave-side 1100ms ease-in-out 700ms infinite; }
+        @keyframes mute-wave-mid {
+          0%, 100% { transform: scaleY(1); }
+          50% { transform: scaleY(0.55); }
+        }
+        @keyframes mute-wave-side {
+          0%, 100% { transform: var(--shift) scaleY(0.45); }
+          50% { transform: var(--shift) scaleY(0.85); }
+        }
+        /* Static transforms double as the transition start/end points; the
+           running animation overrides them while sound is on. */
+        .mute-wave i:nth-child(1) { --shift: translateX(-7px); transform: var(--shift) scaleY(0.45); }
+        .mute-wave i:nth-child(3) { --shift: translateX(7px); transform: var(--shift) scaleY(0.45); }
+        /* Muted: bars stop resonating, rotate flat, and converge into one
+           stationary horizontal line at the center. */
+        .mute-wave[data-muted] i { animation: none; transform: rotate(90deg) scaleY(1); }
+      `}</style>
+      <button
+        type="button"
+        onClick={toggleMute}
+        // The intro flicker loop disarms on any window pointerdown; muting
+        // shouldn't kill the animation, so keep this click from bubbling.
+        onPointerDown={(e) => e.stopPropagation()}
+        aria-label={muted ? "Unmute sounds" : "Mute sounds"}
+        title={muted ? "Unmute sounds" : "Mute sounds"}
+        style={{
+          position: "fixed",
+          bottom: 14,
+          right: 14,
+          zIndex: 10001,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: 38,
+          height: 38,
+          padding: 0,
+          background: "none",
+          border: "none",
+          color: "#dceaff",
+          cursor: "pointer",
+          filter: "drop-shadow(0 0 6px rgba(8,8,8,0.6))",
+        }}
+      >
+        <span
+          className="mute-wave"
+          data-muted={muted ? "" : undefined}
+          aria-hidden="true"
+        >
+          <i />
+          <i />
+          <i />
+        </span>
+      </button>
       {/* Cursor-follow hint: tells the user the desk is interactive. */}
       <style>{`@keyframes desk-cursor-pulse { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.7); opacity: 0.45; } }`}</style>
       <div

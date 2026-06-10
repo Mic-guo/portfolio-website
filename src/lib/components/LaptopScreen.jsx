@@ -55,20 +55,50 @@ const FOLDERS = [
   },
 }));
 
+// Desktop chrome: a small logout pill in the bottom-right corner (clear of
+// the Projects folder above and the centered dock) that returns to login.
+const LOGOUT_BTN = { x: W - 250, y: H - 104, w: 202, h: 60 };
+
+// Login screen layout (canvas pixels). The laptop boots to this view; the
+// "Continue as Guest" button swaps to the desktop. It's Michael's machine, so
+// the avatar IS the user — only a password field, no username.
+const LOGIN_UI = {
+  avatar: { cx: W / 2, cy: 330, r: 70 },
+  password: { x: W / 2 - 260, y: 484, w: 520, h: 74 },
+  guest: { x: W / 2 - 200, y: 606, w: 400, h: 70 },
+};
+const FIELD_PAD = 26;
+// Caps typed input so text/dots never overflow the field box.
+const MAX_FIELD_LEN = 18;
+
+function inRect(px, py, r) {
+  return px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
+}
+
 // Plane UVs run 0..1 left→right / bottom→top; canvas y runs top→down.
+function uvToPx(uv) {
+  return { px: uv.x * W, py: (1 - uv.y) * H };
+}
+
 function folderAtUv(uv) {
   if (!uv) return null;
-  const px = uv.x * W;
-  const py = (1 - uv.y) * H;
-  return (
-    FOLDERS.find(
-      ({ hit }) =>
-        px >= hit.x &&
-        px <= hit.x + hit.w &&
-        py >= hit.y &&
-        py <= hit.y + hit.h,
-    ) ?? null
-  );
+  const { px, py } = uvToPx(uv);
+  return FOLDERS.find(({ hit }) => inRect(px, py, hit)) ?? null;
+}
+
+function desktopHitAtUv(uv) {
+  if (!uv) return null;
+  const { px, py } = uvToPx(uv);
+  if (inRect(px, py, LOGOUT_BTN)) return "logout";
+  return folderAtUv(uv)?.id ?? null;
+}
+
+function loginHitAtUv(uv) {
+  if (!uv) return null;
+  const { px, py } = uvToPx(uv);
+  if (inRect(px, py, LOGIN_UI.password)) return "password";
+  if (inRect(px, py, LOGIN_UI.guest)) return "guest";
+  return null;
 }
 
 export default function LaptopScreen({ onFolderClick }) {
@@ -137,9 +167,11 @@ export default function LaptopScreen({ onFolderClick }) {
     return geo;
   }, [width, height]);
 
-  // Hover lives in a ref (not state) so pointer-moves repaint the canvas
-  // without re-rendering the React tree.
+  // Hover/screen/login state live in refs (not state) so pointer-moves and
+  // keystrokes repaint the canvas without re-rendering the React tree.
   const hoveredRef = useRef(null);
+  const screenRef = useRef("login"); // "login" | "desktop"
+  const loginRef = useRef({ focused: null, password: "" });
 
   const { texture, redraw } = useMemo(() => {
     const canvas = document.createElement("canvas");
@@ -150,12 +182,57 @@ export default function LaptopScreen({ onFolderClick }) {
     texture.colorSpace = THREE.SRGBColorSpace;
     texture.anisotropy = gl.capabilities.getMaxAnisotropy();
     const redraw = () => {
-      drawDesktop(ctx, { hoveredId: hoveredRef.current, now: new Date() });
+      const state = {
+        hoveredId: hoveredRef.current,
+        now: new Date(),
+        login: loginRef.current,
+        caretOn: Math.floor(Date.now() / 530) % 2 === 0,
+      };
+      if (screenRef.current === "login") drawLogin(ctx, state);
+      else drawDesktop(ctx, state);
       texture.needsUpdate = true;
     };
     redraw();
     return { texture, redraw };
   }, [gl]);
+
+  // Blinking caret: repaint on a timer only while a login field is focused.
+  const blinkTimerRef = useRef(0);
+  const syncBlink = useCallback(() => {
+    clearInterval(blinkTimerRef.current);
+    if (screenRef.current === "login" && loginRef.current.focused) {
+      blinkTimerRef.current = setInterval(redraw, 530);
+    }
+  }, [redraw]);
+  useEffect(() => () => clearInterval(blinkTimerRef.current), []);
+
+  // Type into the focused login field. Capture phase + stopPropagation so
+  // page-level shortcuts (dev inspector 'I', Escape) don't fire while typing.
+  useEffect(() => {
+    const onKey = (e) => {
+      const login = loginRef.current;
+      if (screenRef.current !== "login" || !login.focused) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      e.stopPropagation();
+      if (e.key === "Backspace") {
+        e.preventDefault();
+        login.password = login.password.slice(0, -1);
+      } else if (e.key === "Tab" || e.key === "Enter" || e.key === "Escape") {
+        e.preventDefault();
+        login.focused = null;
+      } else if (e.key.length === 1) {
+        if (login.password.length < MAX_FIELD_LEN) {
+          login.password += e.key;
+        }
+      } else {
+        return;
+      }
+      syncBlink();
+      redraw();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [redraw, syncBlink]);
 
   // Keep the clock live: repaint right after each minute boundary, in the
   // user's local timezone (toLocale* below picks it up automatically).
@@ -178,11 +255,15 @@ export default function LaptopScreen({ onFolderClick }) {
     (id) => {
       if (hoveredRef.current === id) return;
       hoveredRef.current = id;
-      document.body.style.cursor = id ? "pointer" : "";
+      document.body.style.cursor =
+        id === "password" ? "text" : id ? "pointer" : "";
       redraw();
     },
     [redraw],
   );
+
+  const hitIdAtUv = (uv) =>
+    screenRef.current === "login" ? loginHitAtUv(uv) : desktopHitAtUv(uv);
 
   useEffect(
     () => () => {
@@ -196,14 +277,38 @@ export default function LaptopScreen({ onFolderClick }) {
       geometry={geometry}
       position={position}
       quaternion={quaternion}
-      onPointerMove={(e) => setHovered(folderAtUv(e.uv)?.id ?? null)}
+      onPointerMove={(e) => setHovered(hitIdAtUv(e.uv))}
       onPointerOut={() => setHovered(null)}
       onClick={(e) => {
-        const folder = folderAtUv(e.uv);
-        if (!folder) return;
-        // Folder clicks shouldn't also trigger the desk's click-to-explore.
+        if (screenRef.current === "login") {
+          const id = loginHitAtUv(e.uv);
+          const login = loginRef.current;
+          // Interactive elements shouldn't also trigger click-to-explore.
+          if (id) e.stopPropagation();
+          if (id === "guest") {
+            screenRef.current = "desktop";
+            login.focused = null;
+            setHovered(null);
+          } else {
+            login.focused = id === "password" ? id : null;
+          }
+          syncBlink();
+          redraw();
+          return;
+        }
+        const id = desktopHitAtUv(e.uv);
+        if (!id) return;
+        // Screen UI clicks shouldn't also trigger the desk's click-to-explore.
         e.stopPropagation();
-        onFolderClick?.(folder.id);
+        if (id === "logout") {
+          // Back to a fresh lock screen.
+          screenRef.current = "login";
+          loginRef.current = { focused: null, password: "" };
+          setHovered(null);
+          redraw();
+          return;
+        }
+        onFolderClick?.(id);
       }}
     >
       {/* Self-lit: the display should glow regardless of scene lighting. */}
@@ -218,10 +323,179 @@ const FONT =
 function drawDesktop(ctx, { hoveredId, now }) {
   drawWallpaper(ctx);
   drawClock(ctx, now);
-  FOLDERS.forEach((folder) =>
-    drawFolder(ctx, folder, folder.id === hoveredId),
-  );
+  FOLDERS.forEach((folder) => drawFolder(ctx, folder, folder.id === hoveredId));
   drawDock(ctx);
+  drawLogoutButton(ctx, LOGOUT_BTN, hoveredId === "logout");
+}
+
+// Small pill with an exit-door glyph; clicking returns to the lock screen.
+function drawLogoutButton(ctx, rect, hovered) {
+  ctx.fillStyle = hovered ? "rgba(55,53,47,0.08)" : "#ffffff";
+  rr(ctx, rect.x, rect.y, rect.w, rect.h, rect.h / 2);
+  ctx.fill();
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = INK;
+  ctx.lineJoin = "round";
+  rr(ctx, rect.x, rect.y, rect.w, rect.h, rect.h / 2);
+  ctx.stroke();
+
+  // Exit glyph: door bracket with an arrow leaving through it.
+  const gx = rect.x + 30;
+  const gy = rect.y + rect.h / 2;
+  const s = 13;
+  ctx.lineWidth = 4;
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(gx + s * 0.35, gy - s);
+  ctx.lineTo(gx - s * 0.6, gy - s);
+  ctx.lineTo(gx - s * 0.6, gy + s);
+  ctx.lineTo(gx + s * 0.35, gy + s);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(gx - s * 0.1, gy);
+  ctx.lineTo(gx + s * 1.5, gy);
+  ctx.moveTo(gx + s * 0.8, gy - s * 0.6);
+  ctx.lineTo(gx + s * 1.5, gy);
+  ctx.lineTo(gx + s * 0.8, gy + s * 0.6);
+  ctx.stroke();
+
+  ctx.fillStyle = INK;
+  ctx.font = `600 26px ${FONT}`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("Log Out", gx + s * 1.5 + (rect.w - 60 - s * 1.5) / 2 + 4, gy);
+}
+
+// macOS-style lock screen in the same flat ink-outline language: big centered
+// clock, avatar, username/password fields, and a guest button.
+function drawLogin(ctx, { hoveredId, now, login, caretOn }) {
+  drawWallpaper(ctx);
+
+  const cx = W / 2;
+  const time = now.toLocaleTimeString(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  const date = now.toLocaleDateString(undefined, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
+  ctx.textAlign = "center";
+  ctx.textBaseline = "alphabetic";
+  ctx.fillStyle = INK;
+  ctx.font = `700 64px ${FONT}`;
+  ctx.fillText(time, cx, 152);
+  ctx.fillStyle = INK_SOFT;
+  ctx.font = `500 28px ${FONT}`;
+  ctx.fillText(date, cx, 196);
+
+  drawAvatar(ctx, LOGIN_UI.avatar);
+
+  ctx.fillStyle = INK;
+  ctx.font = `600 34px ${FONT}`;
+  ctx.textAlign = "center";
+  ctx.fillText("Michael", cx, LOGIN_UI.avatar.cy + LOGIN_UI.avatar.r + 52);
+
+  drawField(ctx, LOGIN_UI.password, {
+    value: login.password,
+    placeholder: "Password",
+    masked: true,
+    focused: login.focused === "password",
+    caretOn,
+  });
+  drawGuestButton(ctx, LOGIN_UI.guest, hoveredId === "guest");
+}
+
+function drawAvatar(ctx, { cx, cy, r }) {
+  ctx.lineWidth = 5;
+  ctx.strokeStyle = INK;
+  ctx.fillStyle = FOLDER_FILL;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+
+  // Simple ink person glyph, clipped to the circle: head + shoulders.
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(cx, cy, r - 2.5, 0, Math.PI * 2);
+  ctx.clip();
+  ctx.fillStyle = INK;
+  ctx.beginPath();
+  ctx.arc(cx, cy - r * 0.22, r * 0.32, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(cx, cy + r * 0.78, r * 0.58, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawField(
+  ctx,
+  rect,
+  { value, placeholder, masked, focused, caretOn },
+) {
+  ctx.fillStyle = "#ffffff";
+  rr(ctx, rect.x, rect.y, rect.w, rect.h, 16);
+  ctx.fill();
+  ctx.lineWidth = focused ? 6 : 4;
+  ctx.strokeStyle = focused ? INK : "rgba(55,53,47,0.45)";
+  ctx.lineJoin = "round";
+  rr(ctx, rect.x, rect.y, rect.w, rect.h, 16);
+  ctx.stroke();
+
+  const textX = rect.x + FIELD_PAD;
+  const midY = rect.y + rect.h / 2;
+  let caretX = textX;
+
+  if (masked && value) {
+    // Password dots.
+    ctx.fillStyle = INK;
+    const dotR = 7;
+    const gap = 24;
+    for (let i = 0; i < value.length; i += 1) {
+      ctx.beginPath();
+      ctx.arc(textX + dotR + i * gap, midY, dotR, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    caretX = textX + value.length * gap;
+  } else if (value) {
+    ctx.fillStyle = INK;
+    ctx.font = `500 30px ${FONT}`;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.fillText(value, textX, midY);
+    caretX = textX + ctx.measureText(value).width + 3;
+  } else if (!focused) {
+    ctx.fillStyle = INK_SOFT;
+    ctx.font = `500 30px ${FONT}`;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.fillText(placeholder, textX, midY);
+  }
+
+  if (focused && caretOn) {
+    ctx.fillStyle = INK;
+    ctx.fillRect(caretX, midY - 18, 3, 36);
+  }
+}
+
+function drawGuestButton(ctx, rect, hovered) {
+  ctx.fillStyle = hovered ? "rgba(55,53,47,0.08)" : "#ffffff";
+  rr(ctx, rect.x, rect.y, rect.w, rect.h, rect.h / 2);
+  ctx.fill();
+  ctx.lineWidth = 5;
+  ctx.strokeStyle = INK;
+  ctx.lineJoin = "round";
+  rr(ctx, rect.x, rect.y, rect.w, rect.h, rect.h / 2);
+  ctx.stroke();
+
+  ctx.fillStyle = INK;
+  ctx.font = `600 28px ${FONT}`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("Continue as Guest", rect.x + rect.w / 2, rect.y + rect.h / 2);
 }
 
 function drawWallpaper(ctx) {
@@ -307,7 +581,12 @@ const DOCK_ICON = 76;
 const DOCK_GAP = 26;
 
 function drawDock(ctx) {
-  const icons = [drawBrowserIcon, drawMailIcon, drawNotesIcon, drawTerminalIcon];
+  const icons = [
+    drawBrowserIcon,
+    drawMailIcon,
+    drawNotesIcon,
+    drawTerminalIcon,
+  ];
   const pad = 22;
   const innerW = icons.length * DOCK_ICON + (icons.length - 1) * DOCK_GAP;
   const barW = innerW + pad * 2;
