@@ -33,6 +33,8 @@ export default function ModelViewer({
   objectTransforms,
   shadows = true,
   onManifest,
+  onHoverChange,
+  onModelClick,
   style,
   inspector = false,
   children,
@@ -320,7 +322,22 @@ export default function ModelViewer({
                   onUpdateSelectedPose={updateSelectedKeyframePose}
                 />
               )}
-              <ModelMesh rotation={rotation} shadows={shadows} />
+              {/* Hover/click handlers only attach when requested so the model
+                  doesn't join the raycast set unnecessarily. Covers the host
+                  model and every child (companions, platform). Companions with
+                  their own onClick stopPropagation, so they win over this. */}
+              <group
+                onPointerOver={
+                  onHoverChange ? () => onHoverChange(true) : undefined
+                }
+                onPointerOut={
+                  onHoverChange ? () => onHoverChange(false) : undefined
+                }
+                onClick={onModelClick}
+              >
+                <ModelMesh rotation={rotation} shadows={shadows} />
+                {children}
+              </group>
               {objectTransformAvailable && (
                 <ObjectTransformMode
                   enabled={objectTransformOn}
@@ -333,7 +350,6 @@ export default function ModelViewer({
               {inspectorOn && selection?.current && (
                 <NodeHighlight object={selection.current} />
               )}
-              {children}
             </InspectorProvider>
           </SceneProvider>
         </Suspense>

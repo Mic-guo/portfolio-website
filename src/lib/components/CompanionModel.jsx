@@ -63,6 +63,9 @@ function getRoomEnvMap(gl) {
 //                 reflect (metallic PBR models render dead black without one).
 //                 Scoped to this model only — does not light the rest of the
 //                 scene. 0 (default) disables.
+//   envMapEnable  optional 0→1 driver multiplied into envMapIntensity (eased
+//                 per-frame), so the reflections can dim with the scene's
+//                 lighting instead of staying lit (env maps ignore lights).
 //   onClick       pointer click handler; also enables a pointer cursor.
 export default function CompanionModel({
   src,
@@ -77,6 +80,7 @@ export default function CompanionModel({
   debugLabels = false,
   debugVisibility,
   envMapIntensity = 0,
+  envMapEnable,
   onClick,
 }) {
   const { manifest, scaleFactor: hostScale } = useSceneMetrics();
@@ -183,7 +187,9 @@ export default function CompanionModel({
   const gl = useThree((s) => s.gl);
 
   // Runs after the materials effect so overrides also pick up the env map.
+  const envMaterials = useRef([]);
   useEffect(() => {
+    envMaterials.current = [];
     if (!envMapIntensity) return;
     const envMap = getRoomEnvMap(gl);
     scene.traverse((obj) => {
@@ -191,8 +197,12 @@ export default function CompanionModel({
       obj.material.envMap = envMap;
       obj.material.envMapIntensity = envMapIntensity;
       obj.material.needsUpdate = true;
+      envMaterials.current.push(obj.material);
     });
   }, [scene, materials, envMapIntensity, gl]);
+
+  const envGate = useDriver(envMapEnable ?? 1);
+  const envGateEased = useRef(envMapEnable == null ? 1 : 0);
 
   const debugSpread =
     debugLabels === true ? 0.22 : (debugLabels?.spread ?? 0.22);
@@ -262,6 +272,17 @@ export default function CompanionModel({
     if (spinRef.current && spinSpeed) {
       spinRef.current.rotation.y += delta * spinSpeed;
     }
+    // Same easing rate as SceneLights' gate so reflections dim in lockstep
+    // with the scene lighting.
+    if (envMapEnable && envMaterials.current.length) {
+      const target = THREE.MathUtils.clamp(envGate.current, 0, 1);
+      envGateEased.current +=
+        (target - envGateEased.current) * Math.min(1, delta * 6);
+      const intensity = envMapIntensity * envGateEased.current;
+      for (const material of envMaterials.current) {
+        material.envMapIntensity = intensity;
+      }
+    }
   });
 
   const clickProps = onClick
@@ -270,8 +291,9 @@ export default function CompanionModel({
           event.stopPropagation();
           onClick(event);
         },
-        onPointerOver: (event) => {
-          event.stopPropagation();
+        // No stopPropagation: hover must keep bubbling to ancestors (e.g. the
+        // ModelViewer hover group that gates the spotlight).
+        onPointerOver: () => {
           document.body.style.cursor = "pointer";
         },
         onPointerOut: () => {

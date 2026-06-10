@@ -6,6 +6,7 @@ export { default as ModelMesh } from "./components/ModelMesh";
 export { default as SceneLights } from "./components/SceneLights";
 export { default as CompanionModel } from "./components/CompanionModel";
 export { default as ScenePlatform } from "./components/ScenePlatform";
+export { default as LaptopScreen } from "./components/LaptopScreen";
 export {
   SceneProvider,
   useManifest,
